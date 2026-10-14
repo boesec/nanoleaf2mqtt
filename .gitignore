@@ -1,0 +1,12 @@
+# Build output
+/target/
+
+# Secrets and raw device captures (contain the token, serial number, device name)
+.env
+*.env
+raw/
+
+# Local-only working documents (never published, see CLAUDE.md §8)
+Docs/
+CLAUDE.md
+AGENTS.md
