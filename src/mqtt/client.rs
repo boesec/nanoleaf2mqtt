@@ -221,7 +221,13 @@ impl Inner {
             ),
             Err(error) => tracing::warn!(%error, "could not serialise info"),
         }
-        for ((device, path), retained) in &state.retained {
+        // `reachable = true` promises that the values next to it are current: it goes out after
+        // every value.
+        let (reachable, values): (Vec<_>, Vec<_>) = state
+            .retained
+            .iter()
+            .partition(|((_, path), _)| *path == StatusPath::Reachable);
+        for ((device, path), retained) in values.into_iter().chain(reachable) {
             try_publish(
                 connection,
                 &connection.topics.status(device, *path),
