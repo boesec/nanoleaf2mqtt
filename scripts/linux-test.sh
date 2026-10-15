@@ -4,7 +4,7 @@
 # scripts/check.sh instead.
 #
 # Bundle layout: tests/ (test binaries), bin/nanoleaf2mqtt (the service binary the tests start),
-# source/ (CONTRACT.md and src/, read by tests), manifest-dir.txt and bin-exe.txt (the paths
+# source/ (CONTRACT.md, src/, tests/, fixtures/ – read by tests), manifest-dir.txt and bin-exe.txt (the paths
 # CARGO_MANIFEST_DIR and CARGO_BIN_EXE_nanoleaf2mqtt had at compile time).
 set -uo pipefail
 exec 2>&1

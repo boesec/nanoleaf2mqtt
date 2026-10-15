@@ -61,7 +61,8 @@ if ($tests.Count -eq 0 -or $service.Count -ne 1) {
     exit 1
 }
 
-# Tests read CONTRACT.md and src/ below CARGO_MANIFEST_DIR and start the service binary from
+# Tests read CONTRACT.md, src/, tests/ (golden files) and fixtures/ below CARGO_MANIFEST_DIR and
+# start the service binary from
 # CARGO_BIN_EXE_nanoleaf2mqtt. Both are Windows paths fixed at compile time; the bundle carries
 # them, and linux-test.sh recreates them on the Linux side.
 $ManifestDir = Split-Path -Parent $tests[0].manifest_path
@@ -74,7 +75,9 @@ foreach ($test in $tests) {
 }
 Copy-Item $service[0].executable (Join-Path $Bundle 'bin/nanoleaf2mqtt')
 Copy-Item (Join-Path $ManifestDir 'CONTRACT.md') (Join-Path $Bundle 'source')
-Copy-Item -Recurse (Join-Path $ManifestDir 'src') (Join-Path $Bundle 'source')
+foreach ($dir in 'src', 'tests', 'fixtures') {
+    Copy-Item -Recurse (Join-Path $ManifestDir $dir) (Join-Path $Bundle 'source')
+}
 Copy-Item (Join-Path $PSScriptRoot 'linux-test.sh') $Bundle
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $Bundle 'manifest-dir.txt'), $ManifestDir, $utf8)
