@@ -1,0 +1,51 @@
+id: 3
+data: {"events":[{"attr":1,"value":"Waterfall"}]}
+
+id: 1
+data: {"events":[{"attr":1,"value":true}]}
+
+id: 1
+data: {"events":[{"attr":1,"value":false}]}
+
+id: 3
+data: {"events":[{"attr":1,"value":"Beatdrop"}]}
+
+id: 1
+data: {"events":[{"attr":1,"value":true}]}
+
+id: 3
+data: {"events":[{"attr":1,"value":"*Shuffle*"}]}
+
+id: 3
+data: {"events":[{"attr":1,"value":"Morning Sky"}]}
+
+id: 3
+data: {"events":[{"attr":1,"value":"Northern Lights"}]}
+
+id: 3
+data: {"events":[{"attr":1,"value":"Starlight"}]}
+
+id: 1
+data: {"events":[{"attr":2,"value":28}]}
+
+id: 1
+data: {"events":[{"attr":1,"value":false},{"attr":2,"value":0}]}
+
+id: 1
+data: {"events":[{"attr":1,"value":true},{"attr":2,"value":13}]}
+
+id: 1
+data: {"events":[{"attr":2,"value":59}]}
+
+id: 1
+data: {"events":[{"attr":2,"value":100}]}
+
+id: 3
+data: {"events":[{"attr":1,"value":"*Shuffle*"}]}
+
+id: 1
+data: {"events":[{"attr":2,"value":54}]}
+
+id: 1
+data: {"events":[{"attr":2,"value":44}]}
+

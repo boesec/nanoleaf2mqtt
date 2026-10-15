@@ -1,0 +1,1 @@
+{"model":"NL42","firmwareVersion":"12.0.3","someFutureField":{"nested":[1,2,3]},"effects":{"effectsList":["Blaze",17,"Prism"]},"panelLayout":{"layout":{}},"state":{"on":{"value":true},"brightness":{"value":55},"hue":{"value":"red","max":360,"min":0},"sat":{},"colorMode":"rainbow","unknownAttr":{"value":1}}}
