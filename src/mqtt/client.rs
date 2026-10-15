@@ -206,19 +206,37 @@ impl Mqtt {
     /// Publishes `val` on `status/<device>/<path>` as `{val, ts, lc}`, retained, and remembers it
     /// for the republish after a reconnect. `touch` goes through [`Mqtt::publish_touch`].
     pub fn publish_status(&self, device: &DeviceId, path: StatusPath, val: Value) {
+        self.publish(device, path, val, false);
+    }
+
+    /// Like [`Mqtt::publish_status`], but only if `val` differs from the value last published on
+    /// the topic (or none was). Returns whether it was published.
+    pub fn publish_status_if_changed(
+        &self,
+        device: &DeviceId,
+        path: StatusPath,
+        val: Value,
+    ) -> bool {
+        self.publish(device, path, val, true)
+    }
+
+    fn publish(&self, device: &DeviceId, path: StatusPath, val: Value, only_changed: bool) -> bool {
         if path == StatusPath::Touch {
             tracing::warn!("touch is an event; use publish_touch");
-            return;
+            return false;
         }
         let topic = self.inner.topics.status(device, path);
         let ts = to_ms(Utc::now());
         let mut state = self.inner.state();
+        if only_changed && state.last_change.last(&topic) == Some(&val) {
+            return false;
+        }
         let lc = state.last_change.observe(&topic, &val, ts);
         let payload = match serde_json::to_vec(&StatePayload { val, ts, lc }) {
             Ok(payload) => payload,
             Err(error) => {
                 tracing::warn!(topic, %error, "could not serialise status");
-                return;
+                return false;
             }
         };
         if state.connected {
@@ -226,6 +244,7 @@ impl Mqtt {
                 .try_publish(&topic, QoS::AtLeastOnce, true, payload.clone());
         }
         state.retained.insert(topic, payload);
+        true
     }
 
     /// Publishes a touch event on `status/<device>/touch`: not retained, QoS 0, `{val, ts}`.

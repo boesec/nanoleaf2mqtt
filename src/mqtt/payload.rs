@@ -101,6 +101,11 @@ impl LastChange {
         }
     }
 
+    /// The value last observed on `topic`.
+    pub fn last(&self, topic: &str) -> Option<&Value> {
+        self.entries.get(topic).map(|(val, _)| val)
+    }
+
     /// Forgets every topic starting with `prefix`.
     pub fn forget_under(&mut self, prefix: &str) {
         self.entries.retain(|topic, _| !topic.starts_with(prefix));
@@ -252,7 +257,10 @@ mod tests {
         assert_eq!(lc.observe("t", &json!(2), 30), 30);
         assert_eq!(lc.observe("t", &json!(2), 40), 30);
         assert_eq!(lc.observe("u", &json!(2), 50), 50, "topics are separate");
+        assert_eq!(lc.last("t"), Some(&json!(2)));
+        assert_eq!(lc.last("v"), None);
         lc.forget_under("t");
+        assert_eq!(lc.last("t"), None);
         assert_eq!(lc.observe("t", &json!(2), 60), 60, "forgotten");
         assert_eq!(lc.observe("u", &json!(2), 70), 50);
     }

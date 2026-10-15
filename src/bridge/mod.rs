@@ -114,16 +114,18 @@ impl Bridge {
             let (event_tx, event_rx) = mpsc::channel(EVENT_QUEUE);
             let (effects_tx, effects_rx) = watch::channel(None);
             let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE);
+            let (reread_tx, reread_rx) = mpsc::channel(COMMAND_QUEUE);
             tasks.push(nanoleaf::spawn(
                 client.clone(),
                 options.stream.clone(),
-                event_tx.clone(),
+                event_tx,
             ));
             tasks.push(tokio::spawn(device::follow(
                 id.clone(),
                 mqtt.clone(),
                 client.clone(),
                 event_rx,
+                reread_rx,
                 Arc::clone(&reachability),
                 effects_tx,
             )));
@@ -132,7 +134,7 @@ impl Bridge {
                 client,
                 command_rx,
                 effects_rx,
-                event_tx,
+                reread_tx,
             )));
             routes.insert(id, command_tx);
         }

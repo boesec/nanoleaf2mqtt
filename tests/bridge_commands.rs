@@ -104,22 +104,29 @@ async fn after_a_command_the_device_report_is_published_not_what_was_sent() {
     let (device, bridge) = running(port, "c5").await;
     watcher.barrier("c5/status/zz-barrier").await;
 
-    // The device ignores the command: its unchanged report is published.
+    // The device ignores the command, but its hue was changed elsewhere and not reported yet:
+    // the state read back after the command shows the hue, and no brightness 20.
+    let mut root = support::root(true, 30, "Prism");
+    root["state"]["hue"]["value"] = json!(99);
+    device.set_root(root);
+    set(port, "c5", "brightness", "20").await;
+    device.next_command().await;
+    let seen = watcher.until_val("c5/status/dev/hue", json!(99)).await;
+    let topics: Vec<&str> = seen.iter().map(|m| m.topic.as_str()).collect();
+    assert_eq!(topics, ["c5/status/dev/hue"], "only what changed");
+
+    // The device follows the command: the new value is there without waiting for its event
+    // stream (nothing is pushed on it here), and only that value.
+    let mut root = support::root(true, 20, "Prism");
+    root["state"]["hue"]["value"] = json!(99);
+    device.set_root(root);
     set(port, "c5", "brightness", "20").await;
     device.next_command().await;
     let seen = watcher
-        .until(|m| m.topic == "c5/status/dev/brightness")
-        .await;
-    assert_eq!(seen.last().unwrap().val(), json!(30));
-
-    // The device follows the command: the new value is there without waiting for its event
-    // stream (nothing is pushed on it here).
-    device.set_root(support::root(true, 20, "Prism"));
-    set(port, "c5", "brightness", "20").await;
-    device.next_command().await;
-    watcher
         .until_val("c5/status/dev/brightness", json!(20))
         .await;
+    let topics: Vec<&str> = seen.iter().map(|m| m.topic.as_str()).collect();
+    assert_eq!(topics, ["c5/status/dev/brightness"]);
 
     bridge.shutdown().await;
 }

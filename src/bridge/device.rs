@@ -33,19 +33,35 @@ impl Reachability {
     }
 }
 
-/// Publishes what the device reports, until its event stream ends.
+/// Publishes what the device reports, until its event stream ends: the stream's events, and the
+/// state read back after commands (`rereads`), of which only the changed values are published.
 pub(crate) async fn follow(
     id: DeviceId,
     mqtt: Mqtt,
     client: Client,
     mut events: mpsc::Receiver<DeviceEvent>,
+    mut rereads: mpsc::Receiver<DeviceSnapshot>,
     reachability: Arc<Reachability>,
     effects: watch::Sender<Option<Vec<String>>>,
 ) {
     // `Reachable` is followed by a snapshot; `reachable = true` goes out after its values, so
     // a consumer never sees "reachable" next to old values.
     let mut came_back = false;
-    while let Some(event) = events.recv().await {
+    let mut rereads_open = true;
+    loop {
+        let event = tokio::select! {
+            event = events.recv() => match event {
+                Some(event) => event,
+                None => return,
+            },
+            snapshot = rereads.recv(), if rereads_open => {
+                match snapshot {
+                    Some(snapshot) => publish_snapshot(&mqtt, &id, &snapshot, &effects, false),
+                    None => rereads_open = false,
+                }
+                continue;
+            }
+        };
         match event {
             DeviceEvent::Reachable => came_back = true,
             DeviceEvent::Unreachable => {
@@ -55,7 +71,8 @@ pub(crate) async fn follow(
                 reachability.set(&mqtt, &id, false);
             }
             DeviceEvent::Snapshot(snapshot) => {
-                publish_snapshot(&mqtt, &id, &snapshot, &effects);
+                // After a (re)connect everything is published, changed or not.
+                publish_snapshot(&mqtt, &id, &snapshot, &effects, true);
                 if std::mem::take(&mut came_back) {
                     let (path, val) = map::reachable_value(true);
                     mqtt.publish_status(&id, path, val);
@@ -98,7 +115,7 @@ async fn reread(
     reason: &'static str,
 ) {
     match client.snapshot().await {
-        Ok(snapshot) => publish_snapshot(mqtt, id, &snapshot, effects),
+        Ok(snapshot) => publish_snapshot(mqtt, id, &snapshot, effects, false),
         Err(error) => tracing::warn!(
             device = id.as_str(),
             reason,
@@ -108,14 +125,20 @@ async fn reread(
     }
 }
 
+/// Publishes every value of the snapshot (`full`), or only those that changed.
 fn publish_snapshot(
     mqtt: &Mqtt,
     id: &DeviceId,
     snapshot: &DeviceSnapshot,
     effects: &watch::Sender<Option<Vec<String>>>,
+    full: bool,
 ) {
     for (path, val) in map::snapshot_values(snapshot) {
-        mqtt.publish_status(id, path, val);
+        if full {
+            mqtt.publish_status(id, path, val);
+        } else {
+            mqtt.publish_status_if_changed(id, path, val);
+        }
     }
     if snapshot.effects.is_some() {
         effects.send_replace(snapshot.effects.clone());
@@ -123,15 +146,15 @@ fn publish_snapshot(
 }
 
 /// Executes the device's commands one after the other. What was sent is never published: after
-/// a command the state is read back from the device and handed to [`follow`] like any other
-/// report. The event stream would report the change as well, but only on the device's own tick
+/// a command the state is read back from the device and handed to [`follow`], which publishes
+/// what changed. The event stream would report the change as well, but only on the device's own tick
 /// of about 1.5 s, and not every effect change.
 pub(crate) async fn execute(
     id: DeviceId,
     client: Client,
     mut commands: mpsc::Receiver<SetMessage>,
     effects: watch::Receiver<Option<Vec<String>>>,
-    reports: mpsc::Sender<DeviceEvent>,
+    rereads: mpsc::Sender<DeviceSnapshot>,
 ) {
     while let Some(message) = commands.recv().await {
         let path = message.path.as_str();
@@ -167,11 +190,7 @@ pub(crate) async fn execute(
         }
         match client.snapshot().await {
             Ok(snapshot) => {
-                if reports
-                    .send(DeviceEvent::Snapshot(Box::new(snapshot)))
-                    .await
-                    .is_err()
-                {
+                if rereads.send(snapshot).await.is_err() {
                     return;
                 }
             }
