@@ -6,7 +6,7 @@ pub mod map;
 pub mod payload;
 mod topic;
 
-pub use client::{Mqtt, MqttError, SetMessage, Timing};
+pub use client::{LastChangeUpdate, Mqtt, MqttError, SetMessage, Timing};
 pub use payload::{
     CONTRACT_VERSION, EventPayload, InfoPayload, LastChange, PayloadError, SERVICE_NAME, SPEC,
     StatePayload, parse_command,

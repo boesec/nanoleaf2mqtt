@@ -67,6 +67,11 @@ impl StatusPath {
     pub fn retained(self) -> bool {
         self != Self::Touch
     }
+
+    /// The path named by a topic level.
+    pub fn parse(level: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == level)
+    }
 }
 
 /// The paths below `<prefix>/set/<id>/`.
@@ -269,6 +274,10 @@ mod tests {
             assert_eq!(CommandPath::parse(path.as_str()), Some(path));
         }
         assert_eq!(CommandPath::parse("reachable"), None);
+        for path in StatusPath::ALL {
+            assert_eq!(StatusPath::parse(path.as_str()), Some(path));
+        }
+        assert_eq!(StatusPath::parse("identify"), None);
         assert!(
             StatusPath::ALL
                 .iter()

@@ -1,8 +1,14 @@
-//! The broker connection: one `rumqttc` event loop task and the handle that publishes through it.
+//! The broker connection: one `rumqttc` event loop task per connection and the handle that
+//! publishes through it.
 //!
-//! Every retained status message is remembered; after a (re)connect `connected`, `info` and all
-//! of them are published again, so a broker that lost its retained store is complete again.
-//! While the broker is unreachable nothing is queued: the remembered values go out on reconnect.
+//! Every retained status value is remembered per device and path; after a (re)connect
+//! `connected`, `info` and all of them are published again, so a broker that lost its retained
+//! store is complete again. While the broker is unreachable (or none is configured) nothing is
+//! queued: the remembered values go out on the next connect.
+//!
+//! The broker can be switched at runtime ([`Mqtt::switch`]): the old connection publishes
+//! `connected = 0` and disconnects, the new one starts with a full republish under its prefix.
+//! Every clone of the handle follows the switch.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +19,7 @@ use chrono::{DateTime, Utc};
 use rumqttc::{AsyncClient, ConnectReturnCode, Event, EventLoop, LastWill, Outgoing, Packet, QoS};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use super::map::touch_value;
 use super::payload::{EventPayload, InfoPayload, LastChange, StatePayload, to_ms};
@@ -23,6 +29,8 @@ use crate::model::{BrokerConfig, ConfigError, DeviceId, Gesture};
 const REQUEST_QUEUE: usize = 1024;
 const SET_QUEUE: usize = 64;
 const MAX_PACKET: usize = 256 * 1024;
+/// How long a connection being replaced may take to say goodbye.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timing of the broker connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +64,20 @@ pub struct SetMessage {
     pub payload: Vec<u8>,
 }
 
+/// A status value whose `lc` changed since it was last taken with
+/// [`Mqtt::take_last_changes`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct LastChangeUpdate {
+    /// The device.
+    pub device: DeviceId,
+    /// The status path.
+    pub path: StatusPath,
+    /// The value.
+    pub val: Value,
+    /// When it last changed, ms since the epoch.
+    pub lc: i64,
+}
+
 /// Error setting up the broker connection.
 #[derive(Debug, thiserror::Error)]
 pub enum MqttError {
@@ -64,34 +86,55 @@ pub enum MqttError {
     Config(#[from] ConfigError),
 }
 
+type Key = (DeviceId, StatusPath);
+
+/// The last retained publish of a status topic.
+struct Retained {
+    val: Value,
+    payload: Vec<u8>,
+}
+
+/// One connection to one broker.
+struct Connection {
+    generation: u64,
+    client: AsyncClient,
+    topics: Topics,
+    abort: AbortHandle,
+    /// `true` once the connection's task has ended.
+    closed: watch::Receiver<bool>,
+}
+
 struct State {
+    /// Generation of the current connection; a task of an older one changes nothing.
+    generation: u64,
+    connection: Option<Connection>,
     /// A session with the broker exists (ConnAck received, no error since).
     connected: bool,
     all_reachable: bool,
+    /// Keyed by `<device>/<path>`, independent of the prefix.
     last_change: LastChange,
-    /// Last payload of every retained status topic, for the republish after a reconnect.
-    retained: BTreeMap<String, Vec<u8>>,
+    retained: BTreeMap<Key, Retained>,
+    /// Values whose `lc` changed and was not taken yet.
+    dirty: BTreeMap<Key, (Value, i64)>,
 }
 
 struct Inner {
-    client: AsyncClient,
-    topics: Topics,
     started_at: DateTime<Utc>,
+    timing: Timing,
+    set_tx: mpsc::Sender<SetMessage>,
     state: Mutex<State>,
     ready: watch::Sender<bool>,
     stopping: AtomicBool,
+}
+
+fn lc_key(device: &DeviceId, path: StatusPath) -> String {
+    format!("{device}/{}", path.as_str())
 }
 
 impl Inner {
     fn state(&self) -> MutexGuard<'_, State> {
         // Never held across an await; the state stays usable after a panic elsewhere.
         self.state.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn try_publish(&self, topic: &str, qos: QoS, retain: bool, payload: Vec<u8>) {
-        if let Err(error) = self.client.try_publish(topic, qos, retain, payload) {
-            tracing::warn!(topic, %error, "could not queue publish");
-        }
     }
 
     fn connected_value(state: &State) -> &'static [u8] {
@@ -101,23 +144,45 @@ impl Inner {
     /// Subscribes and publishes `connected`, `info` and every remembered status topic.
     fn on_connect(&self, state: &mut State) {
         state.connected = true;
-        let filter = self.topics.set_wildcard();
-        if let Err(error) = self.client.try_subscribe(&filter, QoS::AtLeastOnce) {
+        let Some(connection) = &state.connection else {
+            return;
+        };
+        let filter = connection.topics.set_wildcard();
+        if let Err(error) = connection.client.try_subscribe(&filter, QoS::AtLeastOnce) {
             tracing::warn!(filter, %error, "could not subscribe");
         }
-        self.try_publish(
-            &self.topics.connected(),
+        try_publish(
+            connection,
+            &connection.topics.connected(),
             QoS::AtLeastOnce,
             true,
             Self::connected_value(state).to_vec(),
         );
         match serde_json::to_vec(&InfoPayload::new(self.started_at)) {
-            Ok(info) => self.try_publish(&self.topics.info(), QoS::AtLeastOnce, true, info),
+            Ok(info) => try_publish(
+                connection,
+                &connection.topics.info(),
+                QoS::AtLeastOnce,
+                true,
+                info,
+            ),
             Err(error) => tracing::warn!(%error, "could not serialise info"),
         }
-        for (topic, payload) in &state.retained {
-            self.try_publish(topic, QoS::AtLeastOnce, true, payload.clone());
+        for ((device, path), retained) in &state.retained {
+            try_publish(
+                connection,
+                &connection.topics.status(device, *path),
+                QoS::AtLeastOnce,
+                true,
+                retained.payload.clone(),
+            );
         }
+    }
+}
+
+fn try_publish(connection: &Connection, topic: &str, qos: QoS, retain: bool, payload: Vec<u8>) {
+    if let Err(error) = connection.client.try_publish(topic, qos, retain, payload) {
+        tracing::warn!(topic, %error, "could not queue publish");
     }
 }
 
@@ -130,23 +195,54 @@ pub struct Mqtt {
 impl std::fmt::Debug for Mqtt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Mqtt")
-            .field("prefix", &self.inner.topics.prefix())
+            .field("prefix", &self.prefix())
             .field("session", &self.is_connected())
             .finish()
     }
 }
 
 impl Mqtt {
+    /// A handle without a broker: values are remembered, nothing is published until
+    /// [`Mqtt::switch`] names a broker. Non-retained commands of every later connection arrive
+    /// on the returned receiver.
+    pub fn new(timing: Timing) -> (Self, mpsc::Receiver<SetMessage>) {
+        let (set_tx, set_rx) = mpsc::channel(SET_QUEUE);
+        let inner = Arc::new(Inner {
+            started_at: Utc::now(),
+            timing,
+            set_tx,
+            state: Mutex::new(State {
+                generation: 0,
+                connection: None,
+                connected: false,
+                all_reachable: false,
+                last_change: LastChange::new(),
+                retained: BTreeMap::new(),
+                dirty: BTreeMap::new(),
+            }),
+            ready: watch::channel(false).0,
+            stopping: AtomicBool::new(false),
+        });
+        (Self { inner }, set_rx)
+    }
+
     /// Starts the connection task. It connects, reconnects forever with backoff until
-    /// [`Mqtt::shutdown`], and forwards non-retained commands to the returned receiver.
+    /// [`Mqtt::shutdown`] or [`Mqtt::switch`], and forwards non-retained commands to the returned
+    /// receiver.
     pub fn spawn(
         config: &BrokerConfig,
         timing: Timing,
     ) -> Result<(Self, mpsc::Receiver<SetMessage>, JoinHandle<()>), MqttError> {
         let topics = Topics::new(config.prefix.clone())?;
+        let (mqtt, set_rx) = Self::new(timing);
+        let task = mqtt.connect(config, topics);
+        Ok((mqtt, set_rx, task))
+    }
+
+    fn connect(&self, config: &BrokerConfig, topics: Topics) -> JoinHandle<()> {
         let mut options =
             rumqttc::MqttOptions::new(config.client_id.clone(), config.host.clone(), config.port);
-        options.set_keep_alive(timing.keep_alive);
+        options.set_keep_alive(self.inner.timing.keep_alive);
         options.set_clean_session(true);
         options.set_max_packet_size(MAX_PACKET, MAX_PACKET);
         options.set_last_will(LastWill::new(
@@ -164,32 +260,67 @@ impl Mqtt {
             options.set_credentials(username.clone(), password);
         }
         let (client, eventloop) = AsyncClient::new(options, REQUEST_QUEUE);
-        let (set_tx, set_rx) = mpsc::channel(SET_QUEUE);
-        let inner = Arc::new(Inner {
-            client,
-            topics,
-            started_at: Utc::now(),
-            state: Mutex::new(State {
-                connected: false,
-                all_reachable: false,
-                last_change: LastChange::new(),
-                retained: BTreeMap::new(),
-            }),
-            ready: watch::channel(false).0,
-            stopping: AtomicBool::new(false),
-        });
         tracing::info!(
             broker = %format_args!("{}:{}", config.host, config.port),
-            prefix = inner.topics.prefix(),
+            prefix = topics.prefix(),
             "connecting to the broker"
         );
-        let task = tokio::spawn(run(eventloop, Arc::clone(&inner), set_tx, timing));
-        Ok((Self { inner }, set_rx, task))
+        let mut state = self.inner.state();
+        state.generation += 1;
+        let generation = state.generation;
+        let (closed_tx, closed) = watch::channel(false);
+        let task = tokio::spawn(run(
+            eventloop,
+            Arc::clone(&self.inner),
+            generation,
+            topics.clone(),
+            closed_tx,
+        ));
+        state.connection = Some(Connection {
+            generation,
+            client,
+            topics,
+            abort: task.abort_handle(),
+            closed,
+        });
+        task
     }
 
-    /// The topic builder in use.
-    pub fn topics(&self) -> &Topics {
-        &self.inner.topics
+    /// Moves to another broker or prefix, or (`None`) disconnects for good: the current
+    /// connection publishes `connected = 0` and disconnects, then the new one starts and
+    /// republishes everything remembered. Values published meanwhile are remembered and go out
+    /// with the republish.
+    pub async fn switch(&self, config: Option<&BrokerConfig>) -> Result<(), MqttError> {
+        let topics = config.map(|c| Topics::new(c.prefix.clone())).transpose()?;
+        let (old, was_connected) = {
+            let mut state = self.inner.state();
+            state.generation += 1;
+            let was_connected = std::mem::replace(&mut state.connected, false);
+            self.inner.ready.send_replace(false);
+            (state.connection.take(), was_connected)
+        };
+        if let Some(old) = old {
+            close(old, was_connected).await;
+        }
+        if self.inner.stopping.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if let (Some(config), Some(topics)) = (config, topics) {
+            // The task runs on its own; `closed` tells when it ends.
+            drop(self.connect(config, topics));
+        } else {
+            tracing::info!("no broker configured");
+        }
+        Ok(())
+    }
+
+    /// The prefix of the current connection; `None` without a broker.
+    pub fn prefix(&self) -> Option<String> {
+        self.inner
+            .state()
+            .connection
+            .as_ref()
+            .map(|c| c.topics.prefix().to_owned())
     }
 
     /// Whether a session with the broker exists.
@@ -221,49 +352,72 @@ impl Mqtt {
     }
 
     fn publish(&self, device: &DeviceId, path: StatusPath, val: Value, only_changed: bool) -> bool {
-        if path == StatusPath::Touch {
+        if !path.retained() {
             tracing::warn!("touch is an event; use publish_touch");
             return false;
         }
-        let topic = self.inner.topics.status(device, path);
+        let key = lc_key(device, path);
         let ts = to_ms(Utc::now());
         let mut state = self.inner.state();
-        if only_changed && state.last_change.last(&topic) == Some(&val) {
+        let changed = state.last_change.last(&key) != Some(&val);
+        if only_changed && !changed {
             return false;
         }
-        let lc = state.last_change.observe(&topic, &val, ts);
-        let payload = match serde_json::to_vec(&StatePayload { val, ts, lc }) {
+        let lc = state.last_change.observe(&key, &val, ts);
+        let payload = match serde_json::to_vec(&StatePayload {
+            val: val.clone(),
+            ts,
+            lc,
+        }) {
             Ok(payload) => payload,
             Err(error) => {
-                tracing::warn!(topic, %error, "could not serialise status");
+                tracing::warn!(device = device.as_str(), path = path.as_str(), %error, "could not serialise status");
                 return false;
             }
         };
         if state.connected {
-            self.inner
-                .try_publish(&topic, QoS::AtLeastOnce, true, payload.clone());
+            if let Some(connection) = &state.connection {
+                try_publish(
+                    connection,
+                    &connection.topics.status(device, path),
+                    QoS::AtLeastOnce,
+                    true,
+                    payload.clone(),
+                );
+            }
         }
-        state.retained.insert(topic, payload);
+        if changed {
+            state
+                .dirty
+                .insert((device.clone(), path), (val.clone(), lc));
+        }
+        state
+            .retained
+            .insert((device.clone(), path), Retained { val, payload });
         true
     }
 
     /// Publishes a touch event on `status/<device>/touch`: not retained, QoS 0, `{val, ts}`.
     /// Dropped while the broker is unreachable.
     pub fn publish_touch(&self, device: &DeviceId, panel: Option<u32>, gesture: Gesture) {
-        let topic = self.inner.topics.status(device, StatusPath::Touch);
         let payload = EventPayload {
             val: touch_value(panel, gesture),
             ts: to_ms(Utc::now()),
         };
         let state = self.inner.state();
-        if !state.connected {
-            tracing::debug!(topic, "broker unreachable, touch dropped");
-            return;
-        }
+        let connection = match &state.connection {
+            Some(connection) if state.connected => connection,
+            _ => {
+                tracing::debug!(
+                    device = device.as_str(),
+                    "broker unreachable, touch dropped"
+                );
+                return;
+            }
+        };
+        let topic = connection.topics.status(device, StatusPath::Touch);
         match serde_json::to_vec(&payload) {
-            Ok(payload) => self
-                .inner
-                .try_publish(&topic, QoS::AtMostOnce, false, payload),
+            Ok(payload) => try_publish(connection, &topic, QoS::AtMostOnce, false, payload),
             Err(error) => tracing::warn!(topic, %error, "could not serialise touch"),
         }
     }
@@ -278,9 +432,10 @@ impl Mqtt {
             return;
         }
         state.all_reachable = all_reachable;
-        if state.connected {
-            self.inner.try_publish(
-                &self.inner.topics.connected(),
+        if let (true, Some(connection)) = (state.connected, &state.connection) {
+            try_publish(
+                connection,
+                &connection.topics.connected(),
                 QoS::AtLeastOnce,
                 true,
                 Inner::connected_value(&state).to_vec(),
@@ -288,25 +443,27 @@ impl Mqtt {
         }
     }
 
-    /// Clears every retained status topic of a removed device (empty retained publish) and
-    /// forgets its values.
+    /// Clears every retained status topic of a device that is no longer followed (empty
+    /// retained publish) and forgets its values, including `lc` values not taken yet.
     pub fn clear_device(&self, device: &DeviceId) {
-        let prefix = self.inner.topics.status_prefix(device);
         let mut state = self.inner.state();
-        state
-            .retained
-            .retain(|topic, _| !topic.starts_with(&prefix));
-        state.last_change.forget_under(&prefix);
-        if !state.connected {
-            tracing::warn!(
-                device = device.as_str(),
-                "broker unreachable, retained topics of the removed device stay"
-            );
-            return;
-        }
+        state.retained.retain(|(d, _), _| d != device);
+        state.dirty.retain(|(d, _), _| d != device);
+        state.last_change.forget_under(&format!("{device}/"));
+        let connection = match &state.connection {
+            Some(connection) if state.connected => connection,
+            _ => {
+                tracing::warn!(
+                    device = device.as_str(),
+                    "broker unreachable, retained topics of the device stay"
+                );
+                return;
+            }
+        };
         for path in StatusPath::ALL.into_iter().filter(|p| p.retained()) {
-            self.inner.try_publish(
-                &self.inner.topics.status(device, path),
+            try_publish(
+                connection,
+                &connection.topics.status(device, path),
                 QoS::AtLeastOnce,
                 true,
                 Vec::new(),
@@ -314,34 +471,141 @@ impl Mqtt {
         }
     }
 
-    /// Publishes `connected = 0`, disconnects and lets the task end.
+    /// Seeds the last change of a status value, typically from persisted values before the
+    /// device reports: a first report of the same value keeps `lc`. A value already known is
+    /// left alone.
+    pub fn seed_last_change(&self, device: &DeviceId, path: StatusPath, val: &Value, lc: i64) {
+        let key = lc_key(device, path);
+        let mut state = self.inner.state();
+        if state.last_change.last(&key).is_none() {
+            state.last_change.observe(&key, val, lc);
+        }
+    }
+
+    /// Takes every value whose `lc` changed since the last call, for persisting.
+    pub fn take_last_changes(&self) -> Vec<LastChangeUpdate> {
+        let dirty = std::mem::take(&mut self.inner.state().dirty);
+        dirty
+            .into_iter()
+            .map(|((device, path), (val, lc))| LastChangeUpdate {
+                device,
+                path,
+                val,
+                lc,
+            })
+            .collect()
+    }
+
+    /// The last value published per status path of every device, in device and path order.
+    pub fn values(&self) -> BTreeMap<DeviceId, Vec<(StatusPath, Value)>> {
+        let state = self.inner.state();
+        let mut out: BTreeMap<DeviceId, Vec<(StatusPath, Value)>> = BTreeMap::new();
+        for ((device, path), retained) in &state.retained {
+            out.entry(device.clone())
+                .or_default()
+                .push((*path, retained.val.clone()));
+        }
+        out
+    }
+
+    /// Publishes `connected = 0`, disconnects and lets the connection task end. Nothing is
+    /// connected afterwards, not even by [`Mqtt::switch`].
     pub async fn shutdown(&self) {
         self.inner.stopping.store(true, Ordering::SeqCst);
-        if self.is_connected() {
-            let topic = self.inner.topics.connected();
-            if let Err(error) = self
-                .inner
-                .client
-                .publish(topic, QoS::AtLeastOnce, true, "0")
+        let (client, connected_topic, was_connected) = {
+            let state = self.inner.state();
+            match &state.connection {
+                Some(c) => (c.client.clone(), c.topics.connected(), state.connected),
+                None => return,
+            }
+        };
+        if was_connected {
+            if let Err(error) = client
+                .publish(connected_topic, QoS::AtLeastOnce, true, "0")
                 .await
             {
                 tracing::debug!(%error, "could not publish connected = 0");
             }
         }
-        if let Err(error) = self.inner.client.disconnect().await {
+        if let Err(error) = client.disconnect().await {
             tracing::debug!(%error, "disconnect request failed");
         }
+    }
+
+    /// Waits until the current connection's task has ended, at most `timeout`, then ends it.
+    /// Meant after [`Mqtt::shutdown`].
+    pub async fn wait_closed(&self, timeout: Duration) {
+        let connection = {
+            let state = self.inner.state();
+            state
+                .connection
+                .as_ref()
+                .map(|c| (c.closed.clone(), c.abort.clone()))
+        };
+        let Some((mut closed, abort)) = connection else {
+            return;
+        };
+        if tokio::time::timeout(timeout, closed.wait_for(|c| *c))
+            .await
+            .is_err()
+        {
+            tracing::warn!("broker connection did not close in time");
+            abort.abort();
+        }
+    }
+}
+
+/// Ends a connection that is being replaced: `connected = 0` and a clean disconnect while a
+/// session exists, otherwise (reconnecting, nothing to say goodbye to) the task is ended at once.
+async fn close(old: Connection, was_connected: bool) {
+    let Connection {
+        generation,
+        client,
+        topics,
+        abort,
+        mut closed,
+    } = old;
+    if was_connected {
+        let goodbye = async {
+            if let Err(error) = client
+                .publish(topics.connected(), QoS::AtLeastOnce, true, "0")
+                .await
+            {
+                tracing::debug!(%error, "could not publish connected = 0");
+            }
+            if let Err(error) = client.disconnect().await {
+                tracing::debug!(%error, "disconnect request failed");
+            }
+            let _ = closed.wait_for(|c| *c).await;
+        };
+        if tokio::time::timeout(CLOSE_TIMEOUT, goodbye).await.is_err() {
+            tracing::warn!(generation, "old broker connection did not close in time");
+        }
+    }
+    abort.abort();
+    tracing::info!(prefix = topics.prefix(), "left the broker");
+}
+
+/// Sends `true` when the connection task ends, also when it is aborted.
+struct ClosedGuard(watch::Sender<bool>);
+
+impl Drop for ClosedGuard {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
     }
 }
 
 async fn run(
     mut eventloop: EventLoop,
     inner: Arc<Inner>,
-    set_tx: mpsc::Sender<SetMessage>,
-    timing: Timing,
+    generation: u64,
+    topics: Topics,
+    closed: watch::Sender<bool>,
 ) {
-    let mut backoff = Backoff::new(timing.backoff_initial, timing.backoff_max);
+    let _closed = ClosedGuard(closed);
+    let mut backoff = Backoff::new(inner.timing.backoff_initial, inner.timing.backoff_max);
     let mut failing = false;
+    let current = |state: &State| state.generation == generation;
     loop {
         match eventloop.poll().await {
             Ok(Event::Incoming(Packet::ConnAck(ack))) => {
@@ -350,36 +614,53 @@ async fn run(
                     tracing::warn!(code = ?ack.code, "broker refused the connection");
                     continue;
                 }
+                let mut state = inner.state();
+                if !current(&state) {
+                    continue;
+                }
                 tracing::info!("connected to the broker");
                 failing = false;
                 backoff.reset();
-                let mut state = inner.state();
                 inner.on_connect(&mut state);
             }
             Ok(Event::Incoming(Packet::SubAck(_))) => {
-                inner.ready.send_replace(true);
+                if current(&inner.state()) {
+                    inner.ready.send_replace(true);
+                }
             }
             Ok(Event::Incoming(Packet::Publish(publish))) => {
-                dispatch(
-                    &inner,
-                    &set_tx,
-                    &publish.topic,
-                    publish.retain,
-                    &publish.payload,
-                );
+                if current(&inner.state()) {
+                    dispatch(
+                        &topics,
+                        &inner.set_tx,
+                        &publish.topic,
+                        publish.retain,
+                        &publish.payload,
+                    );
+                }
             }
             Ok(Event::Outgoing(Outgoing::Disconnect)) => {
-                if inner.stopping.load(Ordering::SeqCst) {
-                    inner.state().connected = false;
-                    inner.ready.send_replace(false);
+                let mut state = inner.state();
+                let is_current = current(&state);
+                if inner.stopping.load(Ordering::SeqCst) || !is_current {
+                    if is_current {
+                        state.connected = false;
+                        inner.ready.send_replace(false);
+                    }
                     tracing::info!("disconnected from the broker");
                     return;
                 }
             }
             Ok(_) => {}
             Err(error) => {
-                let was_connected = std::mem::replace(&mut inner.state().connected, false);
-                inner.ready.send_replace(false);
+                let was_connected = {
+                    let mut state = inner.state();
+                    if !current(&state) {
+                        return;
+                    }
+                    inner.ready.send_replace(false);
+                    std::mem::replace(&mut state.connected, false)
+                };
                 if inner.stopping.load(Ordering::SeqCst) {
                     tracing::info!("disconnected from the broker");
                     return;
@@ -397,13 +678,13 @@ async fn run(
 }
 
 fn dispatch(
-    inner: &Inner,
+    topics: &Topics,
     set_tx: &mpsc::Sender<SetMessage>,
     topic: &str,
     retain: bool,
     payload: &[u8],
 ) {
-    let Some(set) = inner.topics.parse_set(topic) else {
+    let Some(set) = topics.parse_set(topic) else {
         tracing::debug!(topic, "ignoring message on an unknown topic");
         return;
     };
@@ -473,5 +754,47 @@ mod tests {
         assert_eq!(timing.keep_alive, Duration::from_secs(30));
         assert_eq!(timing.backoff_initial, Duration::from_secs(1));
         assert_eq!(timing.backoff_max, Duration::from_secs(30));
+    }
+
+    fn dev(id: &str) -> DeviceId {
+        DeviceId::new(id).unwrap()
+    }
+
+    #[tokio::test]
+    async fn without_broker_values_are_remembered_and_lc_changes_are_collected() {
+        let (mqtt, _commands) = Mqtt::new(Timing::default());
+        assert_eq!(mqtt.prefix(), None);
+        assert!(!mqtt.is_connected());
+        mqtt.publish_status(&dev("a"), StatusPath::On, Value::Bool(true));
+        mqtt.publish_status(&dev("a"), StatusPath::On, Value::Bool(true));
+        mqtt.publish_status(&dev("b"), StatusPath::Brightness, Value::from(5));
+        let taken = mqtt.take_last_changes();
+        assert_eq!(taken.len(), 2, "{taken:?}");
+        assert!(mqtt.take_last_changes().is_empty(), "taken once");
+        // Same value again: no new lc, nothing to persist.
+        mqtt.publish_status(&dev("a"), StatusPath::On, Value::Bool(true));
+        assert!(mqtt.take_last_changes().is_empty());
+        let values = mqtt.values();
+        assert_eq!(values[&dev("a")], vec![(StatusPath::On, Value::Bool(true))]);
+
+        mqtt.clear_device(&dev("a"));
+        assert!(!mqtt.values().contains_key(&dev("a")));
+    }
+
+    #[tokio::test]
+    async fn a_seeded_lc_is_kept_for_the_same_value() {
+        let (mqtt, _commands) = Mqtt::new(Timing::default());
+        let a = dev("a");
+        mqtt.seed_last_change(&a, StatusPath::On, &Value::Bool(true), 1_000);
+        mqtt.seed_last_change(&a, StatusPath::Brightness, &Value::from(5), 2_000);
+        mqtt.publish_status(&a, StatusPath::On, Value::Bool(true));
+        mqtt.publish_status(&a, StatusPath::Brightness, Value::from(6));
+        let changes = mqtt.take_last_changes();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0].path, StatusPath::Brightness);
+        assert!(changes[0].lc > 2_000);
+        // Seeding never overrides a value that is already known.
+        mqtt.seed_last_change(&a, StatusPath::Brightness, &Value::from(5), 3_000);
+        assert!(!mqtt.publish_status_if_changed(&a, StatusPath::Brightness, Value::from(6)));
     }
 }
