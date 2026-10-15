@@ -58,6 +58,80 @@ cargo build --release
 scripts/check.sh      # or scripts/check.ps1 on Windows: fmt, clippy, tests
 ```
 
+## Deployment
+
+The service runs as a systemd unit on Linux (x86_64, glibc 2.36 or later, for example Debian 12
+or 13), under its own system user `nanoleaf2mqtt`. The unit is
+[packaging/systemd/nanoleaf2mqtt.service](packaging/systemd/nanoleaf2mqtt.service): it restarts
+the service whenever it stops and never gives up, and it is hardened (read-only system, no
+capabilities, private `/tmp`, system call filter).
+
+### Build on Windows for Linux
+
+The Linux binary is cross-compiled with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild),
+which uses [Zig](https://ziglang.org) as C compiler and linker. Once:
+
+```powershell
+winget install zig.zig
+cargo install cargo-zigbuild
+rustup target add x86_64-unknown-linux-gnu
+```
+
+Then:
+
+```powershell
+scripts/build-linux.ps1   # -> target/x86_64-unknown-linux-gnu/release/nanoleaf2mqtt
+```
+
+On Linux, `cargo build --release` builds it directly.
+
+### Install and update
+
+From Windows, one command builds, copies binary and unit to the host over SSH, installs or
+updates them, restarts the service and waits for its start line in the journal:
+
+```powershell
+scripts/deploy.ps1 -Target root@<host>              # -SkipBuild deploys the last build
+```
+
+On the host itself (as root), with the binary and the repository's `packaging/` directory at
+hand, [packaging/install.sh](packaging/install.sh) does the same:
+
+```sh
+packaging/install.sh ./nanoleaf2mqtt packaging/systemd/nanoleaf2mqtt.service
+```
+
+The first run creates the system user; the data directory is never touched.
+
+### Where things live
+
+| Path | Content |
+|---|---|
+| `/usr/local/bin/nanoleaf2mqtt` | the binary |
+| `/etc/systemd/system/nanoleaf2mqtt.service` | the unit |
+| `/var/lib/nanoleaf2mqtt/nanoleaf2mqtt.db` | the configuration store, including the secrets; directory 0700, file 0600, owned by `nanoleaf2mqtt`. Back it up and keep the backup private |
+
+Logs: `journalctl -u nanoleaf2mqtt -f`. Bootstrap settings are changed with a drop-in
+(`systemctl edit nanoleaf2mqtt`); nothing secret belongs in the unit or a drop-in.
+
+### Reaching the UI
+
+The unit binds the UI to `127.0.0.1:8080`, so it is not reachable from the network directly.
+Either put a TLS reverse proxy on the same host in front of it (for example nginx with
+`proxy_pass http://127.0.0.1:8080;` and `proxy_set_header Host $host;`, because the UI compares
+`Origin` with `Host` and its session cookie needs TLS), or open an SSH tunnel and browse to
+`http://localhost:8080`:
+
+```sh
+ssh -L 8080:127.0.0.1:8080 root@<host>
+```
+
+### Testing on Linux from Windows
+
+`scripts/linux-test.ps1 -Target root@<host>` runs clippy for the Linux target, cross-compiles
+the test binaries and runs them on a Linux host over SSH; the host needs no Rust toolchain.
+Everything is copied to a temporary directory under `/var/tmp` and removed afterwards.
+
 ## Third-party files
 
 `assets/htmx.min.js` is [htmx](https://htmx.org) 2.0.4, unmodified (Zero-Clause BSD licence),
