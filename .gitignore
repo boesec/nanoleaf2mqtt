@@ -11,3 +11,6 @@ Docs/
 CLAUDE.md
 AGENTS.md
 .claude/
+
+# Local development data (SQLite store)
+/data/
