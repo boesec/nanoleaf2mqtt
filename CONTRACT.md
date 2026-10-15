@@ -35,6 +35,7 @@ changing a payload is a breaking change and raises the contract version (publish
 | `brightness` | integer 0–100 (%; the device reports 0 while off) | `30` |
 | `hue` | integer 0–360 (°) | `120` |
 | `sat` | integer 0–100 (%) | `80` |
+| `hs` | array `[hue, sat]`, published when `hue` or `sat` changes and both are known | `[120,80]` |
 | `ct` | integer, Kelvin, range as reported (1200–6500 on Shapes) | `2700` |
 | `colormode` | `effect`, `hs`, `ct` (as the device reports) | `"effect"` |
 | `effect` | string, name of the selected effect, as reported (incl. pseudo values like `*Shuffle*`) | `"Northern Lights"` |
@@ -60,6 +61,7 @@ are logged and ignored, nothing is sent to the device.
 | `brightness` | 0–100, optionally `{"val":50,"transition":2}` (seconds) | set brightness (does not switch on by itself – the device decides) |
 | `hue` | 0–360 | colour, switches the device to `hs` mode |
 | `sat` | 0–100 | saturation |
+| `hs` | `"h,s"` or `[h,s]`, e.g. `120,80` or `{"val":[120,80]}` | hue, then saturation (two device requests); both are checked first, nothing is sent if either is invalid |
 | `ct` | Kelvin within the reported range | colour temperature |
 | `effect` | effect name from `effects` | select effect |
 | `identify` | anything | panels flash |

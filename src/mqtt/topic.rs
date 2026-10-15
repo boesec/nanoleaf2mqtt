@@ -16,6 +16,8 @@ pub enum StatusPath {
     Hue,
     /// `sat`
     Saturation,
+    /// `hs`: hue and saturation together, derived from the two
+    HueSaturation,
     /// `ct`
     ColorTemperature,
     /// `colormode`
@@ -32,12 +34,13 @@ pub enum StatusPath {
 
 impl StatusPath {
     /// Every status path of the contract.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Reachable,
         Self::On,
         Self::Brightness,
         Self::Hue,
         Self::Saturation,
+        Self::HueSaturation,
         Self::ColorTemperature,
         Self::ColorMode,
         Self::Effect,
@@ -54,6 +57,7 @@ impl StatusPath {
             Self::Brightness => "brightness",
             Self::Hue => "hue",
             Self::Saturation => "sat",
+            Self::HueSaturation => "hs",
             Self::ColorTemperature => "ct",
             Self::ColorMode => "colormode",
             Self::Effect => "effect",
@@ -85,6 +89,8 @@ pub enum CommandPath {
     Hue,
     /// `sat`
     Saturation,
+    /// `hs`: hue and saturation in one command
+    HueSaturation,
     /// `ct`
     ColorTemperature,
     /// `effect`
@@ -95,11 +101,12 @@ pub enum CommandPath {
 
 impl CommandPath {
     /// Every command path of the contract.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::On,
         Self::Brightness,
         Self::Hue,
         Self::Saturation,
+        Self::HueSaturation,
         Self::ColorTemperature,
         Self::Effect,
         Self::Identify,
@@ -112,6 +119,7 @@ impl CommandPath {
             Self::Brightness => "brightness",
             Self::Hue => "hue",
             Self::Saturation => "sat",
+            Self::HueSaturation => "hs",
             Self::ColorTemperature => "ct",
             Self::Effect => "effect",
             Self::Identify => "identify",

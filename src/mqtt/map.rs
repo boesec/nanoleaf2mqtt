@@ -23,6 +23,9 @@ pub fn snapshot_values(snapshot: &DeviceSnapshot) -> Vec<(StatusPath, Value)> {
     if let Some(v) = state.saturation {
         values.push((StatusPath::Saturation, json!(v)));
     }
+    if let (Some(hue), Some(saturation)) = (state.hue, state.saturation) {
+        values.push(hs_value(hue, saturation));
+    }
     if let Some(v) = state.color_temperature {
         values.push((StatusPath::ColorTemperature, json!(v)));
     }
@@ -51,6 +54,18 @@ pub fn change_value(change: &StateChange) -> (StatusPath, Value) {
         StateChange::ColorTemperature(v) => (StatusPath::ColorTemperature, json!(v)),
         StateChange::ColorMode(mode) => (StatusPath::ColorMode, json!(color_mode(mode))),
     }
+}
+
+/// The `val` of `hs`: `[hue, sat]`.
+pub fn hs_value(hue: u16, saturation: u16) -> (StatusPath, Value) {
+    (StatusPath::HueSaturation, json!([hue, saturation]))
+}
+
+/// The `val` of `hs` from the `val`s of `hue` and `sat`; `None` unless both are known numbers.
+pub fn hs_from(hue: Option<&Value>, saturation: Option<&Value>) -> Option<(StatusPath, Value)> {
+    let hue = u16::try_from(hue?.as_u64()?).ok()?;
+    let saturation = u16::try_from(saturation?.as_u64()?).ok()?;
+    Some(hs_value(hue, saturation))
 }
 
 /// The `val` of `reachable`.
@@ -150,6 +165,7 @@ mod tests {
                 (StatusPath::Brightness, json!(30)),
                 (StatusPath::Hue, json!(120)),
                 (StatusPath::Saturation, json!(80)),
+                (StatusPath::HueSaturation, json!([120, 80])),
                 (StatusPath::ColorTemperature, json!(2700)),
                 (StatusPath::ColorMode, json!("effect")),
                 (StatusPath::Effect, json!("*Shuffle*")),
@@ -178,6 +194,28 @@ mod tests {
             snapshot_values(&snapshot),
             vec![(StatusPath::Device, json!({"model":"NL42"}))]
         );
+    }
+
+    #[test]
+    fn hs_needs_both_values() {
+        let only_hue = DeviceSnapshot {
+            state: LightState {
+                hue: Some(10),
+                ..LightState::default()
+            },
+            ..DeviceSnapshot::default()
+        };
+        assert_eq!(
+            snapshot_values(&only_hue),
+            vec![(StatusPath::Hue, json!(10))]
+        );
+        assert_eq!(
+            hs_from(Some(&json!(10)), Some(&json!(20))),
+            Some((StatusPath::HueSaturation, json!([10, 20])))
+        );
+        assert_eq!(hs_from(Some(&json!(10)), None), None);
+        assert_eq!(hs_from(None, Some(&json!(20))), None);
+        assert_eq!(hs_from(Some(&json!("10")), Some(&json!(20))), None);
     }
 
     #[test]

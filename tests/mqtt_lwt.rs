@@ -14,12 +14,13 @@ use nanoleaf2mqtt::mqtt::{Mqtt, StatusPath};
 use serde_json::json;
 use support::{FakeDevice, Proxy, Watcher};
 
-const RETAINED: [&str; 10] = [
+const RETAINED: [&str; 11] = [
     "reachable",
     "on",
     "brightness",
     "hue",
     "sat",
+    "hs",
     "ct",
     "colormode",
     "effect",

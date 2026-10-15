@@ -203,6 +203,7 @@ impl Supervisor {
         self.reachability.add(&self.mqtt, &id);
         let (event_tx, event_rx) = mpsc::channel(EVENT_QUEUE);
         let (effects_tx, effects_rx) = watch::channel(None);
+        let (ranges_tx, ranges_rx) = watch::channel(None);
         let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE);
         let (reread_tx, reread_rx) = mpsc::channel(COMMAND_QUEUE);
         let tasks = vec![
@@ -214,13 +215,17 @@ impl Supervisor {
                 event_rx,
                 reread_rx,
                 Arc::clone(&self.reachability),
-                effects_tx,
+                device::Known {
+                    effects: effects_tx,
+                    ranges: ranges_tx,
+                },
             )),
             tokio::spawn(device::execute(
                 id.clone(),
                 client,
                 command_rx,
                 effects_rx,
+                ranges_rx,
                 reread_tx,
             )),
         ];

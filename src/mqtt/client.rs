@@ -471,6 +471,15 @@ impl Mqtt {
         }
     }
 
+    /// The value last published on `status/<device>/<path>`.
+    pub fn value(&self, device: &DeviceId, path: StatusPath) -> Option<Value> {
+        self.inner
+            .state()
+            .retained
+            .get(&(device.clone(), path))
+            .map(|r| r.val.clone())
+    }
+
     /// Seeds the last change of a status value, typically from persisted values before the
     /// device reports: a first report of the same value keeps `lc`. A value already known is
     /// left alone.

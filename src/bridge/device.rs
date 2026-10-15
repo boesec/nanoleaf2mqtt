@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, watch};
 
-use crate::model::{Command, DeviceEvent, DeviceId, DeviceSnapshot, StateChange};
-use crate::mqtt::{Mqtt, SetMessage, map, parse_command};
+use crate::model::{Command, DeviceEvent, DeviceId, DeviceSnapshot, Ranges, StateChange};
+use crate::mqtt::{Mqtt, SetMessage, StatusPath, map, parse_command};
 use crate::nanoleaf::Client;
 
 /// Reachability of every device; `connected` is `2` only while all are reachable.
@@ -58,6 +58,15 @@ impl Reachability {
     }
 }
 
+/// What the device last reported that its commands are checked against.
+#[derive(Debug)]
+pub(crate) struct Known {
+    /// The effect list.
+    pub(crate) effects: watch::Sender<Option<Vec<String>>>,
+    /// The value ranges.
+    pub(crate) ranges: watch::Sender<Option<Ranges>>,
+}
+
 /// Publishes what the device reports, until its event stream ends: the stream's events, and the
 /// state read back after commands (`rereads`), of which only the changed values are published.
 pub(crate) async fn follow(
@@ -67,7 +76,7 @@ pub(crate) async fn follow(
     mut events: mpsc::Receiver<DeviceEvent>,
     mut rereads: mpsc::Receiver<DeviceSnapshot>,
     reachability: Arc<Reachability>,
-    effects: watch::Sender<Option<Vec<String>>>,
+    known: Known,
 ) {
     // `Reachable` is followed by a snapshot; `reachable = true` goes out after its values, so
     // a consumer never sees "reachable" next to old values.
@@ -81,7 +90,7 @@ pub(crate) async fn follow(
             },
             snapshot = rereads.recv(), if rereads_open => {
                 match snapshot {
-                    Some(snapshot) => publish_snapshot(&mqtt, &id, &snapshot, &effects, false),
+                    Some(snapshot) => publish_snapshot(&mqtt, &id, &snapshot, &known, false),
                     None => rereads_open = false,
                 }
                 continue;
@@ -97,7 +106,7 @@ pub(crate) async fn follow(
             }
             DeviceEvent::Snapshot(snapshot) => {
                 // After a (re)connect everything is published, changed or not.
-                publish_snapshot(&mqtt, &id, &snapshot, &effects, true);
+                publish_snapshot(&mqtt, &id, &snapshot, &known, true);
                 if std::mem::take(&mut came_back) {
                     let (path, val) = map::reachable_value(true);
                     mqtt.publish_status(&id, path, val);
@@ -109,13 +118,19 @@ pub(crate) async fn follow(
                     let (path, val) = map::change_value(change);
                     mqtt.publish_status(&id, path, val);
                 }
+                if changes
+                    .iter()
+                    .any(|c| matches!(c, StateChange::Hue(_) | StateChange::Saturation(_)))
+                {
+                    publish_hs(&mqtt, &id);
+                }
                 // The device does not reliably report the effect that goes with a new colour
                 // mode (`*Solid*` after switching to hs or ct): read it.
                 if changes
                     .iter()
                     .any(|c| matches!(c, StateChange::ColorMode(_)))
                 {
-                    reread(&mqtt, &id, &client, &effects, "colour mode change").await;
+                    reread(&mqtt, &id, &client, &known, "colour mode change").await;
                 }
             }
             DeviceEvent::EffectChanged(name) => {
@@ -123,7 +138,7 @@ pub(crate) async fn follow(
                 mqtt.publish_status(&id, path, val);
             }
             DeviceEvent::LayoutChanged => {
-                reread(&mqtt, &id, &client, &effects, "layout change").await;
+                reread(&mqtt, &id, &client, &known, "layout change").await;
             }
             DeviceEvent::Touch { panel_id, gesture } => {
                 mqtt.publish_touch(&id, panel_id, gesture);
@@ -132,15 +147,19 @@ pub(crate) async fn follow(
     }
 }
 
-async fn reread(
-    mqtt: &Mqtt,
-    id: &DeviceId,
-    client: &Client,
-    effects: &watch::Sender<Option<Vec<String>>>,
-    reason: &'static str,
-) {
+/// Publishes `hs` from the last published hue and saturation, if both are known and the pair
+/// changed.
+fn publish_hs(mqtt: &Mqtt, id: &DeviceId) {
+    let hue = mqtt.value(id, StatusPath::Hue);
+    let saturation = mqtt.value(id, StatusPath::Saturation);
+    if let Some((path, val)) = map::hs_from(hue.as_ref(), saturation.as_ref()) {
+        mqtt.publish_status_if_changed(id, path, val);
+    }
+}
+
+async fn reread(mqtt: &Mqtt, id: &DeviceId, client: &Client, known: &Known, reason: &'static str) {
     match client.snapshot().await {
-        Ok(snapshot) => publish_snapshot(mqtt, id, &snapshot, effects, false),
+        Ok(snapshot) => publish_snapshot(mqtt, id, &snapshot, known, false),
         Err(error) => tracing::warn!(
             device = id.as_str(),
             reason,
@@ -155,7 +174,7 @@ fn publish_snapshot(
     mqtt: &Mqtt,
     id: &DeviceId,
     snapshot: &DeviceSnapshot,
-    effects: &watch::Sender<Option<Vec<String>>>,
+    known: &Known,
     full: bool,
 ) {
     for (path, val) in map::snapshot_values(snapshot) {
@@ -166,31 +185,36 @@ fn publish_snapshot(
         }
     }
     if snapshot.effects.is_some() {
-        effects.send_replace(snapshot.effects.clone());
+        known.effects.send_replace(snapshot.effects.clone());
     }
+    known.ranges.send_replace(Some(snapshot.state.ranges));
 }
 
 /// Executes the device's commands one after the other. What was sent is never published: after
 /// a command the state is read back from the device and handed to [`follow`], which publishes
 /// what changed. The event stream would report the change as well, but only on the device's own tick
 /// of about 1.5 s, and not every effect change.
+///
+/// A message that becomes several device requests (`hs`: hue, then saturation) is checked as a
+/// whole first: if any value is outside the device's range, nothing is sent.
 pub(crate) async fn execute(
     id: DeviceId,
     client: Client,
     mut commands: mpsc::Receiver<SetMessage>,
     effects: watch::Receiver<Option<Vec<String>>>,
+    ranges: watch::Receiver<Option<Ranges>>,
     rereads: mpsc::Sender<DeviceSnapshot>,
 ) {
     while let Some(message) = commands.recv().await {
         let path = message.path.as_str();
-        let command = match parse_command(message.path, &message.payload) {
-            Ok(command) => command,
+        let commands = match parse_command(message.path, &message.payload) {
+            Ok(commands) => commands,
             Err(error) => {
                 tracing::warn!(device = id.as_str(), command = path, %error, "invalid command ignored");
                 continue;
             }
         };
-        if let Command::Effect(name) = &command {
+        if let [Command::Effect(name)] = commands.as_slice() {
             if !effect_known(&client, &effects, name).await {
                 tracing::warn!(
                     device = id.as_str(),
@@ -200,17 +224,27 @@ pub(crate) async fn execute(
                 continue;
             }
         }
-        if let Err(error) = client.send(&command).await {
-            tracing::warn!(
-                device = id.as_str(),
-                command = path,
-                error = error.chain(),
-                "command failed"
-            );
+        if commands.len() > 1 && !in_range(&id, &client, &ranges, &commands, path).await {
+            continue;
+        }
+        let mut sent = 0;
+        for command in &commands {
+            if let Err(error) = client.send(command).await {
+                tracing::warn!(
+                    device = id.as_str(),
+                    command = path,
+                    error = error.chain(),
+                    "command failed"
+                );
+                break;
+            }
+            sent += 1;
+        }
+        if sent == 0 {
             continue;
         }
         tracing::debug!(device = id.as_str(), command = path, "command sent");
-        if command == Command::Identify {
+        if commands == [Command::Identify] {
             continue;
         }
         match client.snapshot().await {
@@ -227,6 +261,40 @@ pub(crate) async fn execute(
             ),
         }
     }
+}
+
+/// Whether every command's value lies within the ranges the device reported (read first if
+/// none are known yet). Logs the first that does not.
+async fn in_range(
+    id: &DeviceId,
+    client: &Client,
+    ranges: &watch::Receiver<Option<Ranges>>,
+    commands: &[Command],
+    path: &str,
+) -> bool {
+    let known = *ranges.borrow();
+    let ranges = match known {
+        Some(ranges) => ranges,
+        None => match client.snapshot().await {
+            Ok(snapshot) => snapshot.state.ranges,
+            Err(error) => {
+                tracing::warn!(
+                    device = id.as_str(),
+                    command = path,
+                    error = error.chain(),
+                    "cannot read the ranges, command ignored"
+                );
+                return false;
+            }
+        },
+    };
+    for command in commands {
+        if let Err(error) = command.check(&ranges) {
+            tracing::warn!(device = id.as_str(), command = path, %error, "command out of range ignored");
+            return false;
+        }
+    }
+    true
 }
 
 /// Whether the device offers the effect. The list may be older than an effect added in the

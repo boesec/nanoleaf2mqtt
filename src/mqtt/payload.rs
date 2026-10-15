@@ -131,27 +131,23 @@ pub enum PayloadError {
 
 /// Parses the payload of a command topic: a plain value or `{"val": …}`. Ranges the device
 /// reports are checked later, against the device's own ranges.
-pub fn parse_command(path: CommandPath, payload: &[u8]) -> Result<Command, PayloadError> {
+///
+/// Every command is one device command, except `hs`: hue, then saturation, both parsed before
+/// either is returned.
+pub fn parse_command(path: CommandPath, payload: &[u8]) -> Result<Vec<Command>, PayloadError> {
+    if path == CommandPath::HueSaturation {
+        let val = parse_value(payload)?.0;
+        let (hue, saturation) = parse_hs(&val)?;
+        return Ok(vec![Command::Hue(hue), Command::Saturation(saturation)]);
+    }
+    parse_single(path, payload).map(|command| vec![command])
+}
+
+fn parse_single(path: CommandPath, payload: &[u8]) -> Result<Command, PayloadError> {
     if path == CommandPath::Identify {
         return Ok(Command::Identify);
     }
-    let text = std::str::from_utf8(payload)
-        .map_err(|_| PayloadError::NotText)?
-        .trim();
-    if text.is_empty() {
-        return Err(PayloadError::Empty);
-    }
-    // Plain text that is not JSON (`on`, `Northern Lights`) is taken as a string value.
-    let json = serde_json::from_str::<Value>(text).unwrap_or_else(|_| Value::String(text.into()));
-    let (val, transition) = match json {
-        Value::Object(mut object) => {
-            let val = object.remove("val").ok_or(PayloadError::Invalid {
-                expected: "a plain value or an object with \"val\"",
-            })?;
-            (val, object.remove("transition"))
-        }
-        other => (other, None),
-    };
+    let (val, transition) = parse_value(payload)?;
     match path {
         CommandPath::On => parse_bool(&val).map(Command::On),
         CommandPath::Brightness => {
@@ -165,6 +161,9 @@ pub fn parse_command(path: CommandPath, payload: &[u8]) -> Result<Command, Paylo
             Ok(Command::Brightness { value, transition })
         }
         CommandPath::Hue => parse_int(&val, 360).map(Command::Hue),
+        CommandPath::HueSaturation => Err(PayloadError::Invalid {
+            expected: "a single command",
+        }),
         CommandPath::Saturation => parse_int(&val, 100).map(Command::Saturation),
         CommandPath::ColorTemperature => parse_int(&val, u16::MAX).map(Command::ColorTemperature),
         CommandPath::Effect => match val {
@@ -177,6 +176,51 @@ pub fn parse_command(path: CommandPath, payload: &[u8]) -> Result<Command, Paylo
         },
         CommandPath::Identify => Ok(Command::Identify),
     }
+}
+
+/// The value of a command payload and, from the object form, its `transition`.
+fn parse_value(payload: &[u8]) -> Result<(Value, Option<Value>), PayloadError> {
+    let text = std::str::from_utf8(payload)
+        .map_err(|_| PayloadError::NotText)?
+        .trim();
+    if text.is_empty() {
+        return Err(PayloadError::Empty);
+    }
+    // Plain text that is not JSON (`on`, `Northern Lights`, `120,80`) is taken as a string value.
+    let json = serde_json::from_str::<Value>(text).unwrap_or_else(|_| Value::String(text.into()));
+    match json {
+        Value::Object(mut object) => {
+            let val = object.remove("val").ok_or(PayloadError::Invalid {
+                expected: "a plain value or an object with \"val\"",
+            })?;
+            Ok((val, object.remove("transition")))
+        }
+        other => Ok((other, None)),
+    }
+}
+
+/// Hue and saturation from `"h,s"` or `[h, s]`.
+fn parse_hs(val: &Value) -> Result<(u16, u16), PayloadError> {
+    const EXPECTED: PayloadError = PayloadError::Invalid {
+        expected: "hue and saturation as \"h,s\" or [h, s]",
+    };
+    let (hue, saturation) = match val {
+        Value::String(text) => {
+            let (hue, saturation) = text.split_once(',').ok_or(EXPECTED)?;
+            (
+                Value::String(hue.to_owned()),
+                Value::String(saturation.to_owned()),
+            )
+        }
+        Value::Array(items) => match items.as_slice() {
+            [hue, saturation] => (hue.clone(), saturation.clone()),
+            _ => return Err(EXPECTED),
+        },
+        _ => return Err(EXPECTED),
+    };
+    let hue = parse_int(&hue, 360).map_err(|_| EXPECTED)?;
+    let saturation = parse_int(&saturation, 100).map_err(|_| EXPECTED)?;
+    Ok((hue, saturation))
 }
 
 fn parse_bool(val: &Value) -> Result<bool, PayloadError> {
@@ -225,7 +269,9 @@ mod tests {
     use super::*;
 
     fn parse(path: CommandPath, payload: &str) -> Result<Command, PayloadError> {
-        parse_command(path, payload.as_bytes())
+        let mut commands = parse_command(path, payload.as_bytes())?;
+        assert_eq!(commands.len(), 1, "{path:?} {payload}");
+        Ok(commands.remove(0))
     }
 
     #[test]
@@ -386,7 +432,52 @@ mod tests {
         }
         assert_eq!(
             parse_command(CommandPath::Identify, &[0xff]),
-            Ok(Command::Identify)
+            Ok(vec![Command::Identify])
         );
+    }
+
+    #[test]
+    fn hs_is_hue_then_saturation() {
+        let both = |h, s| Ok(vec![Command::Hue(h), Command::Saturation(s)]);
+        for payload in [
+            "120,80",
+            " 120 , 80 ",
+            "\"120,80\"",
+            "[120,80]",
+            "[120.0,80]",
+            r#"{"val":[120,80]}"#,
+            r#"{"val":"120,80"}"#,
+        ] {
+            assert_eq!(
+                parse_command(CommandPath::HueSaturation, payload.as_bytes()),
+                both(120, 80),
+                "{payload}"
+            );
+        }
+        assert_eq!(
+            parse_command(CommandPath::HueSaturation, b"360,0"),
+            both(360, 0)
+        );
+        for bad in [
+            "",
+            "120",
+            "120,",
+            ",80",
+            "120,80,1",
+            "361,80",
+            "120,101",
+            "-1,80",
+            "120.5,80",
+            "[120]",
+            "[120,80,1]",
+            r#"{"val":120}"#,
+            r#"{"h":120,"s":80}"#,
+            "red",
+        ] {
+            assert!(
+                parse_command(CommandPath::HueSaturation, bad.as_bytes()).is_err(),
+                "{bad}"
+            );
+        }
     }
 }

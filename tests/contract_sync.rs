@@ -193,3 +193,13 @@ fn gestures_match_the_documented_list() {
     let example: Value = serde_json::from_str(row[2].trim_matches('`')).unwrap();
     assert_eq!(example, map::touch_value(Some(1234), Gesture::SwipeUp));
 }
+
+#[test]
+fn hs_is_documented_with_its_example() {
+    let row = rows("## Device status topics")
+        .into_iter()
+        .find(|r| r[0] == "`hs`")
+        .unwrap();
+    let example: Value = serde_json::from_str(row[2].trim_matches('`')).unwrap();
+    assert_eq!(map::hs_value(120, 80).1, example);
+}

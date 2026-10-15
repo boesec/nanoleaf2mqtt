@@ -14,12 +14,13 @@ use nanoleaf2mqtt::bridge::Bridge;
 use serde_json::{Value, json};
 use support::{FakeDevice, Msg, Watcher};
 
-const STATUS: [&str; 10] = [
+const STATUS: [&str; 11] = [
     "reachable",
     "on",
     "brightness",
     "hue",
     "sat",
+    "hs",
     "ct",
     "colormode",
     "effect",
@@ -96,6 +97,7 @@ async fn initial_state_is_published_retained_with_val_ts_lc() {
     assert_eq!(val("brightness"), json!(30));
     assert_eq!(val("hue"), json!(120));
     assert_eq!(val("sat"), json!(80));
+    assert_eq!(val("hs"), json!([120, 80]));
     assert_eq!(val("ct"), json!(2700));
     assert_eq!(val("colormode"), json!("effect"));
     assert_eq!(val("effect"), json!("Prism"));
@@ -161,6 +163,7 @@ async fn a_colour_mode_change_reads_the_effect_that_goes_with_it() {
     let last = last_per_topic(&seen);
     assert_eq!(last[&topic("s6", "colormode")].val(), json!("hs"));
     assert_eq!(last[&topic("s6", "hue")].val(), json!(10));
+    assert_eq!(last[&topic("s6", "hs")].val(), json!([10, 80]));
 
     bridge.shutdown().await;
 }

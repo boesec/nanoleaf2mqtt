@@ -17,12 +17,13 @@ use nanoleaf2mqtt::model::{ConfigChange, DeviceId};
 use serde_json::{Value, json};
 use support::{BlackHole, FakeDevice, Watcher};
 
-const RETAINED: [&str; 10] = [
+const RETAINED: [&str; 11] = [
     "reachable",
     "on",
     "brightness",
     "hue",
     "sat",
+    "hs",
     "ct",
     "colormode",
     "effect",

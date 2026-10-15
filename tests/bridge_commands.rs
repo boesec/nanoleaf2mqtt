@@ -111,9 +111,13 @@ async fn after_a_command_the_device_report_is_published_not_what_was_sent() {
     device.set_root(root);
     set(port, "c5", "brightness", "20").await;
     device.next_command().await;
-    let seen = watcher.until_val("c5/status/dev/hue", json!(99)).await;
+    let seen = watcher.until_val("c5/status/dev/hs", json!([99, 80])).await;
     let topics: Vec<&str> = seen.iter().map(|m| m.topic.as_str()).collect();
-    assert_eq!(topics, ["c5/status/dev/hue"], "only what changed");
+    assert_eq!(
+        topics,
+        ["c5/status/dev/hue", "c5/status/dev/hs"],
+        "only what changed (hs follows hue)"
+    );
 
     // The device follows the command: the new value is there without waiting for its event
     // stream (nothing is pushed on it here), and only that value.
@@ -202,5 +206,52 @@ async fn an_effect_added_since_the_last_read_is_accepted() {
         device.next_command().await,
         put("effects", json!({"select":"New One"}))
     );
+    bridge.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hs_becomes_hue_then_saturation_and_is_checked_as_a_whole() {
+    let port = support::start_broker();
+    let mut connected = Watcher::start(port, "c6/connected").await;
+    // The device accepts saturation up to 50 only.
+    let mut root = support::root(true, 30, "Prism");
+    root["state"]["sat"]["max"] = json!(50);
+    let device = FakeDevice::start(root).await;
+    let bridge = Bridge::start(
+        &support::broker(port, "c6"),
+        &[support::device("dev", device.address)],
+        support::options(),
+    )
+    .unwrap();
+    connected.until_text("c6/connected", "2").await;
+    connected.stop().await;
+    bridge.mqtt().ready().wait_for(|r| *r).await.unwrap();
+
+    for (payload, hue, sat) in [("120,40", 120, 40), (r#"{"val":[10,20]}"#, 10, 20)] {
+        set(port, "c6", "hs", payload).await;
+        assert_eq!(
+            device.next_command().await,
+            put("state", json!({"hue":{"value":hue}})),
+            "{payload}"
+        );
+        assert_eq!(
+            device.next_command().await,
+            put("state", json!({"sat":{"value":sat}})),
+            "{payload}"
+        );
+    }
+
+    // Saturation outside the device's range, hue outside the contract's, or unparsable: not
+    // even the hue goes out.
+    for payload in ["120,80", "361,10", "120", "[1,2,3]", "red"] {
+        set(port, "c6", "hs", payload).await;
+    }
+    set(port, "c6", "on", "true").await;
+    assert_eq!(
+        device.next_command().await,
+        put("state", json!({"on":{"value":true}})),
+        "the first request is the valid command sent last"
+    );
+    assert!(device.pending_commands().await.is_empty());
     bridge.shutdown().await;
 }
