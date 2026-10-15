@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Devices – nanoleaf2mqtt{% endblock %}
+{% block content %}
+<h1>Devices</h1>
+<p><a class="button" href="/devices/new">Add a device</a></p>
+{% if devices.is_empty() %}
+  <p class="muted">No device yet.</p>
+{% else %}
+  <table>
+    <thead><tr><th>Name</th><th>Id</th><th>Address</th><th>Token</th><th>State</th></tr></thead>
+    <tbody>
+      {% for device in devices %}
+      <tr>
+        <td><a href="/devices/{{ device.id }}">{{ device.name }}</a></td>
+        <td><code>{{ device.id }}</code></td>
+        <td>{{ device.address }}</td>
+        <td>{% if device.token_set %}set{% else %}not set{% endif %}</td>
+        <td><span class="pill {{ device.tone }}">{{ device.state }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+{% endblock %}

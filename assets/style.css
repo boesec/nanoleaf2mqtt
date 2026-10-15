@@ -1,0 +1,127 @@
+/* nanoleaf2mqtt configuration UI. One hand-written file, embedded in the binary. */
+
+:root {
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --edge: #d8dee6;
+  --ink: #1d232b;
+  --soft: #5d6876;
+  --accent: #2563c9;
+  --good: #1f8a52;
+  --warn: #a26a00;
+  --bad: #c0392b;
+  --muted: #7b8594;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161b;
+    --panel: #1b2129;
+    --edge: #2b3440;
+    --ink: #e4e8ee;
+    --soft: #9aa5b3;
+    --accent: #5b9bff;
+    --good: #3cc07f;
+    --warn: #e0a83a;
+    --bad: #ef5b4f;
+    --muted: #7d8898;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+a { color: var(--accent); }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--edge);
+}
+
+header .brand { font-weight: 600; color: var(--ink); text-decoration: none; }
+header nav { display: flex; gap: 1rem; flex: 1; }
+header nav a { text-decoration: none; color: var(--soft); }
+header nav a.current { color: var(--ink); font-weight: 600; }
+header form { margin: 0; }
+
+main { max-width: 60rem; margin: 0 auto; padding: 1.5rem; }
+footer { max-width: 60rem; margin: 0 auto; padding: 0 1.5rem 2rem; color: var(--muted); font-size: 0.85em; }
+
+h1 { font-size: 1.5rem; margin: 0 0 1rem; }
+h2 { font-size: 1.15rem; margin: 1.5rem 0 0.75rem; }
+
+.banner { padding: 0.6rem 0.9rem; border-radius: 6px; border: 1px solid; }
+.banner.bad { border-color: var(--bad); color: var(--bad); }
+.banner.good { border-color: var(--good); color: var(--good); }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.muted { color: var(--muted); }
+
+.pill {
+  display: inline-block;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 0.85em;
+}
+.pill.good { color: var(--good); }
+.pill.bad { color: var(--bad); }
+.pill.warn { color: var(--warn); }
+.pill.muted { color: var(--muted); }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--edge); vertical-align: top; }
+th { color: var(--soft); font-weight: 500; }
+
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; }
+dt { color: var(--soft); }
+dd { margin: 0; }
+
+form.stack { display: grid; gap: 0.9rem; max-width: 32rem; }
+label { display: grid; gap: 0.25rem; }
+label.check { display: flex; gap: 0.5rem; align-items: center; }
+small { color: var(--muted); }
+
+input[type=text], input[type=password], input[type=number], input:not([type]) {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+
+button, .button {
+  display: inline-block;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+button.quiet, .button.quiet { background: transparent; color: var(--accent); }
+button.danger { background: var(--bad); border-color: var(--bad); }
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }

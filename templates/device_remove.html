@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Remove {{ name }} – nanoleaf2mqtt{% endblock %}
+{% block content %}
+<h1>Remove “{{ name }}”?</h1>
+<p>
+  The service stops following the device, clears its topics under
+  <code>status/{{ id }}/</code> on the broker and forgets its settings and token.
+</p>
+<form method="post" action="/devices/{{ id }}/remove" class="actions">
+  <button class="danger" type="submit">Remove</button>
+  <a class="button quiet" href="/devices/{{ id }}">Cancel</a>
+</form>
+{% endblock %}

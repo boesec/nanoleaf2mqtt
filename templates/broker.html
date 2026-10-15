@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Broker – nanoleaf2mqtt{% endblock %}
+{% block content %}
+<h1>MQTT broker</h1>
+<p class="muted">
+  Saving applies at once: the service says goodbye on the old broker (<code>connected = 0</code>),
+  connects to the new one and publishes everything again. No restart needed.
+</p>
+<form method="post" action="/broker" class="stack">
+  <label>
+    Broker URL
+    <input name="url" value="{{ url }}" placeholder="mqtt://broker.lan:1883">
+    <small>Leave empty to publish nothing. TLS (<code>mqtts://</code>) is not supported yet.</small>
+  </label>
+  <label>
+    User name
+    <input name="username" value="{{ username }}" autocomplete="off" placeholder="empty: anonymous">
+  </label>
+  <label>
+    Password
+    <input name="password" type="password" autocomplete="new-password"
+           placeholder="{% if password_set %}set – type to replace it{% else %}not set{% endif %}">
+    <small>Never shown. Leave empty to keep the stored one.</small>
+  </label>
+  {% if password_set %}
+  <label class="check">
+    <input name="clear_password" type="checkbox" value="true">
+    Remove the stored password
+  </label>
+  {% endif %}
+  <label>
+    Topic prefix
+    <input name="prefix" value="{{ prefix }}" required>
+    <small>Topics are <code>{{ prefix }}/status/&lt;device&gt;/…</code>.</small>
+  </label>
+  <div class="actions">
+    <button type="submit">Save</button>
+    <span class="muted">Session right now:
+      {% if connected %}<span class="pill good">connected</span>{% else %}<span class="pill bad">not connected</span>{% endif %}
+    </span>
+  </div>
+</form>
+{% endblock %}

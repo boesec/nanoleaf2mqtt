@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Settings – nanoleaf2mqtt{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<article class="card">
+  <h2>Home Assistant</h2>
+  <form method="post" action="/settings/discovery" class="stack">
+    <label class="check">
+      <input name="ha_discovery" type="checkbox" value="true"{% if ha_discovery %} checked{% endif %}>
+      Announce the devices to Home Assistant (MQTT discovery)
+    </label>
+    <small>Stored now; announcing follows in a later version.</small>
+    <div class="actions"><button type="submit">Save</button></div>
+  </form>
+</article>
+
+<article class="card">
+  <h2>Admin password</h2>
+  <form method="post" action="/settings/password" class="stack">
+    <label>
+      Current password
+      <input name="current" type="password" autocomplete="current-password" required>
+    </label>
+    <label>
+      New password
+      <input name="password" type="password" autocomplete="new-password" minlength="{{ min_len }}" required>
+      <small>At least {{ min_len }} characters. Every other session is logged out.</small>
+    </label>
+    <label>
+      Repeat the new password
+      <input name="confirm" type="password" autocomplete="new-password" minlength="{{ min_len }}" required>
+    </label>
+    <div class="actions"><button type="submit">Change password</button></div>
+  </form>
+</article>
+{% endblock %}

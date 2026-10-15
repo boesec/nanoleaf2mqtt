@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ row.name }} – nanoleaf2mqtt{% endblock %}
+{% block content %}
+<h1>{{ row.name }} <span class="pill {{ row.tone }}">{{ row.state }}</span></h1>
+<p class="muted">Id <code>{{ row.id }}</code></p>
+
+<article class="card">
+  <h2>Settings</h2>
+  <form method="post" action="/devices/{{ row.id }}" class="stack">
+    <label>
+      Name
+      <input name="name" value="{{ row.name }}" required>
+    </label>
+    <label>
+      Host
+      <input name="host" value="{{ host }}" required>
+    </label>
+    <label>
+      Port
+      <input name="port" type="number" min="1" max="65535" value="{{ port }}" required>
+    </label>
+    <label>
+      Token
+      <input name="token" type="password" autocomplete="off"
+             placeholder="{% if row.token_set %}set – type to replace it{% else %}not set{% endif %}">
+      <small>Never shown. Leave empty to keep the stored one.</small>
+    </label>
+    {% if row.token_set %}
+    <label class="check">
+      <input name="clear_token" type="checkbox" value="true">
+      Remove the stored token
+    </label>
+    {% endif %}
+    <div class="actions"><button type="submit">Save</button></div>
+  </form>
+</article>
+
+<article class="card">
+  <h2>Pair</h2>
+  <p>
+    Hold the device's power button for 5–7 seconds until the lights flash, then click
+    “Pair” within 30 seconds. The new token is stored and never shown.
+  </p>
+  <form method="post" action="/devices/{{ row.id }}/pair">
+    <button type="submit">Pair</button>
+  </form>
+</article>
+
+<article class="card">
+  <h2>Follow</h2>
+  {% if row.enabled %}
+    <p>The service follows this device.</p>
+    <form method="post" action="/devices/{{ row.id }}/enabled">
+      <input type="hidden" name="enabled" value="false">
+      <button class="quiet" type="submit">Disable</button>
+      <small>Stops following it and clears its topics on the broker.</small>
+    </form>
+  {% else %}
+    <p>The device is disabled.</p>
+    <form method="post" action="/devices/{{ row.id }}/enabled">
+      <input type="hidden" name="enabled" value="true">
+      <button type="submit">Enable</button>
+    </form>
+  {% endif %}
+  {% if !row.values.is_empty() %}
+    <h2>Last values</h2>
+    <dl>
+      {% for (path, val) in row.values %}<dt><code>{{ path }}</code></dt><dd>{{ val }}</dd>{% endfor %}
+    </dl>
+  {% endif %}
+</article>
+
+<p><a class="button quiet" href="/devices/{{ row.id }}/remove">Remove this device…</a></p>
+{% endblock %}

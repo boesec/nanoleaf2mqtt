@@ -1,0 +1,40 @@
+<section id="overview" hx-get="/fragments/overview" hx-trigger="every 5s" hx-swap="outerHTML">
+  <article class="card">
+    <h2>Broker</h2>
+    {% if view.broker_configured %}
+      <dl>
+        <dt>Broker</dt><dd>{{ view.broker_target }}</dd>
+        <dt>Prefix</dt><dd><code>{{ view.prefix }}</code></dd>
+        <dt>Session</dt>
+        <dd>{% if view.broker_connected %}<span class="pill good">connected</span>{% else %}<span class="pill bad">not connected</span>{% endif %}</dd>
+        <dt>Home Assistant</dt><dd>{% if view.ha_discovery %}discovery on{% else %}discovery off{% endif %}</dd>
+      </dl>
+    {% else %}
+      <p class="muted">No broker configured yet: nothing is published.</p>
+      <p><a class="button" href="/broker">Configure the broker</a></p>
+    {% endif %}
+  </article>
+
+  <article class="card">
+    <h2>Devices</h2>
+    {% if view.devices.is_empty() %}
+      <p class="muted">No device yet. <a href="/devices/new">Add one.</a></p>
+    {% else %}
+      <table>
+        <thead><tr><th>Device</th><th>State</th><th>Last values</th></tr></thead>
+        <tbody>
+          {% for device in view.devices %}
+          <tr>
+            <td><a href="/devices/{{ device.id }}">{{ device.name }}</a><br><code>{{ device.id }}</code></td>
+            <td><span class="pill {{ device.tone }}">{{ device.state }}</span></td>
+            <td>
+              {% if device.values.is_empty() %}<span class="muted">–</span>{% endif %}
+              {% for (path, val) in device.values %}<code>{{ path }}</code> {{ val }}<br>{% endfor %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </article>
+</section>

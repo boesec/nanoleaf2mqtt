@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Log in – nanoleaf2mqtt{% endblock %}
+{% block content %}
+<h1>Log in</h1>
+<form method="post" action="/login" class="stack">
+  <label>
+    Admin password
+    <input name="password" type="password" autocomplete="current-password" required autofocus>
+  </label>
+  <div class="actions"><button type="submit">Log in</button></div>
+</form>
+{% endblock %}

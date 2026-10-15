@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false}'>
+  <title>{% block title %}nanoleaf2mqtt{% endblock %}</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/htmx.min.js" defer></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">nanoleaf2mqtt</a>
+    {% if chrome.signed_in %}
+    <nav>
+      <a href="/"{% if chrome.active == "overview" %} class="current"{% endif %}>Overview</a>
+      <a href="/devices"{% if chrome.active == "devices" %} class="current"{% endif %}>Devices</a>
+      <a href="/broker"{% if chrome.active == "broker" %} class="current"{% endif %}>Broker</a>
+      <a href="/settings"{% if chrome.active == "settings" %} class="current"{% endif %}>Settings</a>
+    </nav>
+    <form method="post" action="/logout"><button class="quiet" type="submit">Log out</button></form>
+    {% endif %}
+  </header>
+
+  <main>
+    {% if !chrome.error.is_empty() %}
+      <p class="banner bad" role="alert">{{ chrome.error }}</p>
+    {% endif %}
+    {% if !chrome.notice.is_empty() %}
+      <p class="banner good" role="status">{{ chrome.notice }}</p>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>nanoleaf2mqtt {{ chrome.version }}</footer>
+</body>
+</html>

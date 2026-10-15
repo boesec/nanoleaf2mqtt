@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Add a device – nanoleaf2mqtt{% endblock %}
+{% block content %}
+<h1>Add a device</h1>
+<form method="post" action="/devices" class="stack">
+  <label>
+    Name
+    <input name="name" value="{{ name }}" required
+           hx-get="/devices/suggest-id" hx-trigger="input changed delay:300ms"
+           hx-target="#suggested-id" hx-swap="innerHTML">
+  </label>
+  <label>
+    Id
+    <input name="id" value="{{ id }}" pattern="[a-z0-9\-]{1,64}" placeholder="empty: derived from the name">
+    <small>Topic level below the prefix, a-z, 0-9 and -; cannot be changed later.
+      Suggested: <code id="suggested-id"></code></small>
+  </label>
+  <label>
+    Host
+    <input name="host" value="{{ host }}" required placeholder="192.168.1.50 or panels.lan">
+  </label>
+  <label>
+    Port
+    <input name="port" type="number" min="1" max="65535" value="{{ port }}" required>
+  </label>
+  <label>
+    Token
+    <input name="token" type="password" autocomplete="off" placeholder="empty: pair after adding">
+    <small>Never shown. Usually left empty: pair the device on its page afterwards.</small>
+  </label>
+  <div class="actions">
+    <button type="submit">Add</button>
+    <a class="button quiet" href="/devices">Cancel</a>
+  </div>
+</form>
+{% endblock %}

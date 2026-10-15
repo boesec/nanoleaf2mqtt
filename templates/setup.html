@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}First start – nanoleaf2mqtt{% endblock %}
+{% block content %}
+<h1>Set the admin password</h1>
+<p class="muted">
+  This is the first start. Choose the password that protects this configuration page. It is
+  stored as a hash only; there is no way to read it back.
+</p>
+<form method="post" action="/setup" class="stack">
+  <label>
+    Password
+    <input name="password" type="password" autocomplete="new-password" minlength="{{ min_len }}" required>
+    <small>At least {{ min_len }} characters.</small>
+  </label>
+  <label>
+    Repeat the password
+    <input name="confirm" type="password" autocomplete="new-password" minlength="{{ min_len }}" required>
+  </label>
+  <div class="actions"><button type="submit">Set password</button></div>
+</form>
+{% endblock %}
