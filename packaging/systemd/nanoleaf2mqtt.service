@@ -1,0 +1,85 @@
+# systemd unit for nanoleaf2mqtt.
+#
+# Install or update with scripts/deploy.ps1 (from a Windows build host) or packaging/install.sh
+# (on the target), or by hand as root:
+#   useradd --system --user-group --home-dir /var/lib/nanoleaf2mqtt --no-create-home \
+#           --shell /usr/sbin/nologin nanoleaf2mqtt
+#   install -m 0755 nanoleaf2mqtt /usr/local/bin/nanoleaf2mqtt
+#   install -m 0644 packaging/systemd/nanoleaf2mqtt.service /etc/systemd/system/nanoleaf2mqtt.service
+#   systemctl daemon-reload
+#   systemctl enable --now nanoleaf2mqtt
+#
+# Logs: journalctl -u nanoleaf2mqtt -f
+#
+# Broker, devices, tokens and the admin password live in the SQLite store in the state directory
+# and are edited through the web UI. Nothing secret belongs in this file or in a drop-in. Change
+# the bootstrap settings with a drop-in (systemctl edit nanoleaf2mqtt), for example
+#   [Service]
+#   Environment=NANOLEAF2MQTT_LOG=info,nanoleaf2mqtt=debug
+#
+# The UI listens on localhost only. Reach it through a TLS reverse proxy on the same host (it must
+# pass the Host header on unchanged) or an SSH tunnel.
+
+[Unit]
+Description=nanoleaf2mqtt - Nanoleaf light panels to MQTT
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting: the service must come back however often it fails.
+StartLimitIntervalSec=0
+
+[Service]
+# Started once the binary runs, so a failing exec counts as a failed start.
+Type=exec
+User=nanoleaf2mqtt
+Group=nanoleaf2mqtt
+
+# The SQLite store. systemd creates /var/lib/nanoleaf2mqtt owned by the service user and readable
+# by nobody else; the service creates the database file in it with mode 0600. It holds the
+# configuration including secrets, so back it up and keep the backup private.
+StateDirectory=nanoleaf2mqtt
+StateDirectoryMode=0700
+UMask=0077
+
+Environment=NANOLEAF2MQTT_DATA_DIR=/var/lib/nanoleaf2mqtt
+Environment=NANOLEAF2MQTT_HTTP_BIND=127.0.0.1:8080
+Environment=NANOLEAF2MQTT_LOG=info
+# The journal stores plain text; no colour escape codes in the log lines.
+Environment=NO_COLOR=1
+
+ExecStart=/usr/local/bin/nanoleaf2mqtt
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+
+# Hardening. Verified in an unprivileged LXC container with nesting enabled. If the service fails
+# with status 226/NAMESPACE in a container without nesting, enable nesting or drop the
+# namespace-based settings (ProtectSystem, ProtectHome, PrivateTmp, PrivateDevices, Protect*).
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
