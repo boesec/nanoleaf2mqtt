@@ -93,7 +93,7 @@ retained, QoS 1, a JSON object:
   `nanoleaf2mqtt_<id>_light`, `…_touch`, `…_identify`; suggested entity ids
   `light.nanoleaf_<id>`, `event.nanoleaf_<id>_touch`, `button.nanoleaf_<id>_identify` (`-` in
   the id becomes `_`).
-- Availability (`availability_mode: all`): `<prefix>/connected` is `2` **and**
+- Availability (`availability_mode: all`): `<prefix>/connected` is `1` or `2` (service up, not `0`) **and**
   `status/<id>/reachable` is `true`.
 - A device's messages are published once it has reported (identity, ranges, effect list) and
   again when that changes, and on every connect, like the status topics.

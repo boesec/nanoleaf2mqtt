@@ -4,8 +4,8 @@
 //! Each device becomes one Home Assistant device with three entities: the light, an `event`
 //! entity for touch gestures and a `button` for identify. The messages point directly at the
 //! contract's status and command topics and read `val` through value templates; there are no
-//! extra state topics. An entity is available while the service reports every device reachable
-//! (`connected` is `2`) and its own device is reachable.
+//! extra state topics. An entity is available while the service is up (`connected` is `1` or `2`)
+//! and its own device is reachable, so one unreachable device does not affect the others.
 //!
 //! Only what the device reported goes into the messages (model, firmware, colour temperature
 //! range, effect list); nothing about how the device or the broker is reached.
@@ -22,8 +22,8 @@ use super::payload::SERVICE_NAME;
 use super::topic::{CommandPath, HaEntity, StatusPath, Topics, ha_discovery, ha_node};
 use crate::model::{DeviceId, DeviceSnapshot, Gesture, ValueRange};
 
-/// `connected` → availability: only `2` (every device reachable) counts as available.
-const CONNECTED_TEMPLATE: &str = "{{ 'online' if value == '2' else 'offline' }}";
+/// `connected` → availability: `1` and `2` (service up) count as available, `0` and anything else not.
+const CONNECTED_TEMPLATE: &str = "{{ 'online' if value in ['1', '2'] else 'offline' }}";
 /// `reachable` → availability; a cleared topic counts as not reachable.
 const REACHABLE_TEMPLATE: &str =
     "{{ 'online' if value_json is defined and value_json.val == true else 'offline' }}";

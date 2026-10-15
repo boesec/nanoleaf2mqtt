@@ -16,7 +16,7 @@
   "availability": [
     {
       "topic": "nanoleaf/connected",
-      "value_template": "{{ 'online' if value == '2' else 'offline' }}"
+      "value_template": "{{ 'online' if value in ['1', '2'] else 'offline' }}"
     },
     {
       "topic": "nanoleaf/status/living-room/reachable",
