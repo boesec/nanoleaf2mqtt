@@ -51,7 +51,7 @@ async fn the_binary_bridges_device_and_broker() {
     let port = support::start_broker();
     let mut watcher = Watcher::start(port, "b1/#").await;
     let device = FakeDevice::start(support::root(false, 0, "Prism")).await;
-    let mut child = command(&[
+    let child = command(&[
         ("NANOLEAF_HOST", device.address.ip().to_string()),
         ("NANOLEAF_PORT", device.address.port().to_string()),
         ("NANOLEAF_TOKEN", support::TOKEN.to_owned()),
@@ -63,12 +63,14 @@ async fn the_binary_bridges_device_and_broker() {
     .stderr(Stdio::null())
     .spawn()
     .unwrap();
+    let mut child = KillOnDrop(child);
 
-    let seen = watcher.until_text("b1/connected", "2").await;
-    assert!(
-        seen.iter()
-            .any(|m| m.topic == "b1/status/dev/on" && m.val() == json!(false))
-    );
+    // After a connect `connected` may come before or after the device's values.
+    let seen = watcher
+        .until_all(&[("b1/connected", Some("2")), ("b1/status/dev/on", None)])
+        .await;
+    let on = seen.iter().find(|m| m.topic == "b1/status/dev/on").unwrap();
+    assert_eq!(on.val(), json!(false));
     support::publish(port, "b1/set/dev/on", b"on", false).await;
     assert_eq!(
         device.next_command().await.body,
@@ -76,7 +78,18 @@ async fn the_binary_bridges_device_and_broker() {
     );
 
     // Killed without a chance to say goodbye: the last will speaks.
-    child.kill().unwrap();
-    child.wait().unwrap();
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
     watcher.until_text("b1/connected", "0").await;
+}
+
+/// Kills the child when the test ends, also when it fails: a child left running would keep the
+/// test harness's output open.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }

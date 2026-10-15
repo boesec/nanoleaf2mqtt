@@ -42,9 +42,12 @@ async fn running(prefix: &str) -> (u16, FakeDevice, Bridge, Watcher) {
         support::options(),
     )
     .unwrap();
-    watcher
-        .until_text(&format!("{prefix}/connected"), "2")
-        .await;
+    // After a connect `connected` may come before or after the device's values; wait for all.
+    let connected = format!("{prefix}/connected");
+    let status: Vec<String> = STATUS.iter().map(|p| topic(prefix, p)).collect();
+    let mut wanted = vec![(connected.as_str(), Some("2"))];
+    wanted.extend(status.iter().map(|t| (t.as_str(), None)));
+    watcher.until_all(&wanted).await;
     (port, device, bridge, watcher)
 }
 

@@ -244,6 +244,21 @@ impl Watcher {
         }
     }
 
+    /// Waits until every `(topic, text)` was seen, in any order; `None` accepts any payload.
+    pub async fn until_all(&mut self, wanted: &[(&str, Option<&str>)]) -> Vec<Msg> {
+        let mut missing: Vec<(String, Option<String>)> = wanted
+            .iter()
+            .map(|(t, x)| ((*t).to_owned(), x.map(str::to_owned)))
+            .collect();
+        self.until(|m| {
+            missing.retain(|(topic, text)| {
+                !(m.topic == *topic && text.as_ref().is_none_or(|t| m.text() == *t))
+            });
+            missing.is_empty()
+        })
+        .await
+    }
+
     /// Waits for a message on `topic` whose text is `text`.
     pub async fn until_text(&mut self, topic: &str, text: &str) -> Vec<Msg> {
         self.until(|m| m.topic == topic && m.text() == text).await
