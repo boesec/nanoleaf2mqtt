@@ -16,6 +16,9 @@ pub const DEFAULT_DEVICE_PORT: u16 = 16021;
 /// Topic prefix until another one is configured.
 pub const DEFAULT_PREFIX: &str = "nanoleaf";
 
+/// Topic prefix Home Assistant listens on for MQTT discovery, its own default.
+pub const DEFAULT_HA_DISCOVERY_PREFIX: &str = "homeassistant";
+
 /// The MQTT client id of this process. Unique per process, so a development instance next to
 /// the running service never takes over the service's session.
 pub fn process_client_id() -> String {

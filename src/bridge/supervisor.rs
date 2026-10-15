@@ -14,7 +14,9 @@ use tokio::time::MissedTickBehavior;
 
 use super::device::{self, Reachability};
 use super::{BridgeOptions, SHUTDOWN_TIMEOUT, client, same_broker, same_device};
-use crate::model::{BrokerConfig, ConfigChange, DeviceConfig, DeviceId};
+use crate::model::{
+    BrokerConfig, ConfigChange, DEFAULT_HA_DISCOVERY_PREFIX, DeviceConfig, DeviceId,
+};
 use crate::mqtt::{LastChangeUpdate, Mqtt, SetMessage, StatusPath};
 use crate::nanoleaf;
 use crate::store::{LastChangeRecord, Store};
@@ -97,6 +99,7 @@ impl Supervisor {
             .take()
             .map(|set_rx| tokio::spawn(route(set_rx, Arc::clone(&self.routes))));
         self.seed_all().await;
+        self.sync_ha_discovery().await;
         for config in devices {
             if self.devices.contains_key(&config.id) {
                 tracing::error!(
@@ -178,6 +181,36 @@ impl Supervisor {
                     tracing::info!(on, "Home Assistant discovery switched");
                     self.ha_discovery = on;
                 }
+                // Also when unchanged: the stored discovery prefix is read again.
+                self.sync_ha_discovery().await;
+            }
+        }
+    }
+
+    /// Hands the discovery setting to the broker connection: on under the stored prefix, or off.
+    async fn sync_ha_discovery(&self) {
+        let prefix = if self.ha_discovery {
+            Some(self.ha_discovery_prefix().await)
+        } else {
+            None
+        };
+        if let Err(error) = self.mqtt.set_ha_discovery(prefix.as_deref()) {
+            tracing::error!(%error, "the Home Assistant discovery prefix cannot be used, discovery is off");
+            // Off is always accepted.
+            let _ = self.mqtt.set_ha_discovery(None);
+        }
+    }
+
+    /// The stored Home Assistant discovery prefix; Home Assistant's default without a store.
+    async fn ha_discovery_prefix(&self) -> String {
+        let Some(store) = &self.store else {
+            return DEFAULT_HA_DISCOVERY_PREFIX.to_owned();
+        };
+        match store.settings().await {
+            Ok(settings) => settings.ha_discovery_prefix,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the discovery prefix, using the default");
+                DEFAULT_HA_DISCOVERY_PREFIX.to_owned()
             }
         }
     }

@@ -2,6 +2,7 @@
 //! payloads are specified in `CONTRACT.md`.
 
 mod client;
+pub mod discovery;
 pub mod map;
 pub mod payload;
 mod topic;
@@ -11,4 +12,4 @@ pub use payload::{
     CONTRACT_VERSION, EventPayload, InfoPayload, LastChange, PayloadError, SERVICE_NAME, SPEC,
     StatePayload, parse_command,
 };
-pub use topic::{CommandPath, SetTopic, StatusPath, Topics};
+pub use topic::{CommandPath, HaEntity, SetTopic, StatusPath, Topics, ha_discovery, ha_node};

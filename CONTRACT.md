@@ -75,5 +75,28 @@ are logged and ignored, nothing is sent to the device.
 
 ## Home Assistant
 
-Home Assistant MQTT discovery (planned, switchable) points directly at these topics via value
-templates; no additional state topics.
+Home Assistant MQTT discovery (<https://www.home-assistant.io/integrations/mqtt/>) is switchable
+in the configuration UI, off by default. The discovery messages point directly at the topics
+above and read `val` through value templates; there are no additional state topics.
+
+`<ha>` is the discovery prefix (default `homeassistant`), `<id>` the device id. Every message is
+retained, QoS 1, a JSON object:
+
+| Topic | Entity |
+|---|---|
+| `<ha>/light/nanoleaf2mqtt_<id>/light/config` | `light` (default schema), named after the device: `on`, `brightness` (scale 100), `hs`, `ct` in Kelvin (range as reported), `effect` with the device's effect list |
+| `<ha>/event/nanoleaf2mqtt_<id>/touch/config` | `event` on `touch`, event types = the gestures above (`unknown_<n>` is not announced); the event carries the touch object's fields |
+| `<ha>/button/nanoleaf2mqtt_<id>/identify/config` | `button` on `set/<id>/identify` |
+
+- One Home Assistant device per device: identifier `nanoleaf2mqtt_<id>`, name, manufacturer,
+  model and firmware as the device reports them (the name falls back to `<id>`). Unique ids are
+  `nanoleaf2mqtt_<id>_light`, `…_touch`, `…_identify`; suggested entity ids
+  `light.nanoleaf_<id>`, `event.nanoleaf_<id>_touch`, `button.nanoleaf_<id>_identify` (`-` in
+  the id becomes `_`).
+- Availability (`availability_mode: all`): `<prefix>/connected` is `2` **and**
+  `status/<id>/reachable` is `true`.
+- A device's messages are published once it has reported (identity, ranges, effect list) and
+  again when that changes, and on every connect, like the status topics.
+- Switching discovery off, or removing or disabling a device, clears its discovery topics (empty
+  retained publish).
+- No address, token or password is ever part of a discovery message.

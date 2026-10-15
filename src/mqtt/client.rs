@@ -9,8 +9,14 @@
 //! The broker can be switched at runtime ([`Mqtt::switch`]): the old connection publishes
 //! `connected = 0` and disconnects, the new one starts with a full republish under its prefix.
 //! Every clone of the handle follows the switch.
+//!
+//! Home Assistant discovery ([`Mqtt::set_ha_discovery`]) works the same way: what each device
+//! reported about itself is remembered, and while discovery is on its messages are published on
+//! every connect, under the current prefix. Switching it off or forgetting a device clears its
+//! discovery topics (empty retained); a clear that cannot be sent while the broker is
+//! unreachable is sent on the next connect.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -21,10 +27,11 @@ use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 
+use super::discovery::{self, DiscoveryDevice};
 use super::map::touch_value;
 use super::payload::{EventPayload, InfoPayload, LastChange, StatePayload, to_ms};
 use super::topic::{CommandPath, StatusPath, Topics};
-use crate::model::{BrokerConfig, ConfigError, DeviceId, Gesture};
+use crate::model::{BrokerConfig, ConfigError, DeviceId, DeviceSnapshot, Gesture, validate_prefix};
 
 const REQUEST_QUEUE: usize = 1024;
 const SET_QUEUE: usize = 64;
@@ -116,6 +123,48 @@ struct State {
     retained: BTreeMap<Key, Retained>,
     /// Values whose `lc` changed and was not taken yet.
     dirty: BTreeMap<Key, (Value, i64)>,
+    /// The Home Assistant discovery prefix while discovery is on.
+    discovery: Option<String>,
+    /// What every device reported about itself, for its discovery messages.
+    about: BTreeMap<DeviceId, DiscoveryDevice>,
+    /// Discovery topics to clear on the next connect.
+    to_clear: BTreeSet<String>,
+}
+
+impl State {
+    /// The current connection while a session exists.
+    fn session(&self) -> Option<&Connection> {
+        self.connection.as_ref().filter(|_| self.connected)
+    }
+
+    /// Publishes the discovery messages of one device, if discovery is on and a session exists.
+    fn publish_discovery(&self, device: &DeviceId) {
+        let (Some(prefix), Some(about)) = (&self.discovery, self.about.get(device)) else {
+            return;
+        };
+        let Some(connection) = self.session() else {
+            return;
+        };
+        for (topic, payload) in discovery::messages(&connection.topics, prefix, device, about) {
+            match serde_json::to_vec(&payload) {
+                Ok(payload) => try_publish(connection, &topic, QoS::AtLeastOnce, true, payload),
+                Err(error) => tracing::warn!(topic, %error, "could not serialise discovery"),
+            }
+        }
+    }
+
+    /// Clears the discovery topics of one device under `prefix`, now or on the next connect.
+    fn clear_discovery(&mut self, prefix: &str, device: &DeviceId) {
+        let topics = discovery::topics(prefix, device);
+        match self.session() {
+            Some(connection) => {
+                for topic in &topics {
+                    try_publish(connection, topic, QoS::AtLeastOnce, true, Vec::new());
+                }
+            }
+            None => self.to_clear.extend(topics),
+        }
+    }
 }
 
 struct Inner {
@@ -144,6 +193,10 @@ impl Inner {
     /// Subscribes and publishes `connected`, `info` and every remembered status topic.
     fn on_connect(&self, state: &mut State) {
         state.connected = true;
+        if state.connection.is_none() {
+            return;
+        }
+        let to_clear = std::mem::take(&mut state.to_clear);
         let Some(connection) = &state.connection else {
             return;
         };
@@ -176,6 +229,13 @@ impl Inner {
                 true,
                 retained.payload.clone(),
             );
+        }
+        // Clears first: a topic cleared and published again ends up published.
+        for topic in to_clear {
+            try_publish(connection, &topic, QoS::AtLeastOnce, true, Vec::new());
+        }
+        for device in state.about.keys() {
+            state.publish_discovery(device);
         }
     }
 }
@@ -219,6 +279,9 @@ impl Mqtt {
                 last_change: LastChange::new(),
                 retained: BTreeMap::new(),
                 dirty: BTreeMap::new(),
+                discovery: None,
+                about: BTreeMap::new(),
+                to_clear: BTreeSet::new(),
             }),
             ready: watch::channel(false).0,
             stopping: AtomicBool::new(false),
@@ -444,12 +507,17 @@ impl Mqtt {
     }
 
     /// Clears every retained status topic of a device that is no longer followed (empty
-    /// retained publish) and forgets its values, including `lc` values not taken yet.
+    /// retained publish) and forgets its values, including `lc` values not taken yet. While Home
+    /// Assistant discovery is on, its discovery topics are cleared as well.
     pub fn clear_device(&self, device: &DeviceId) {
         let mut state = self.inner.state();
         state.retained.retain(|(d, _), _| d != device);
         state.dirty.retain(|(d, _), _| d != device);
         state.last_change.forget_under(&format!("{device}/"));
+        state.about.remove(device);
+        if let Some(prefix) = state.discovery.clone() {
+            state.clear_discovery(&prefix, device);
+        }
         let connection = match &state.connection {
             Some(connection) if state.connected => connection,
             _ => {
@@ -468,6 +536,51 @@ impl Mqtt {
                 true,
                 Vec::new(),
             );
+        }
+    }
+
+    /// Switches Home Assistant discovery on (under `prefix`) or off (`None`). On: the discovery
+    /// messages of every device that has reported are published. Off, or another prefix: the
+    /// topics under the old prefix are cleared. The same setting again changes nothing.
+    pub fn set_ha_discovery(&self, prefix: Option<&str>) -> Result<(), MqttError> {
+        if let Some(prefix) = prefix {
+            validate_prefix(prefix)?;
+        }
+        let mut state = self.inner.state();
+        if state.discovery.as_deref() == prefix {
+            return Ok(());
+        }
+        let devices: Vec<DeviceId> = state.about.keys().cloned().collect();
+        if let Some(old) = state.discovery.take() {
+            for device in &devices {
+                state.clear_discovery(&old, device);
+            }
+        }
+        state.discovery = prefix.map(str::to_owned);
+        for device in &devices {
+            state.publish_discovery(device);
+        }
+        Ok(())
+    }
+
+    /// The Home Assistant discovery prefix while discovery is on.
+    pub fn ha_discovery(&self) -> Option<String> {
+        self.inner.state().discovery.clone()
+    }
+
+    /// Takes over what a snapshot of the device reports about it (see
+    /// [`DiscoveryDevice::update`]). The first snapshot of a device, and every one that changes
+    /// what is known, (re)publishes its discovery messages while discovery is on.
+    pub fn describe_device(&self, device: &DeviceId, snapshot: &DeviceSnapshot) {
+        let mut state = self.inner.state();
+        let known = state.about.contains_key(device);
+        let changed = state
+            .about
+            .entry(device.clone())
+            .or_default()
+            .update(snapshot);
+        if changed || !known {
+            state.publish_discovery(device);
         }
     }
 

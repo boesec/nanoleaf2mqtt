@@ -12,8 +12,8 @@ mod state;
 
 pub use command::{Command, OutOfRange};
 pub use config::{
-    BrokerConfig, ConfigError, DEFAULT_DEVICE_PORT, DEFAULT_MQTT_PORT, DEFAULT_PREFIX,
-    DeviceConfig, DeviceId, parse_broker_url, process_client_id, validate_prefix,
+    BrokerConfig, ConfigError, DEFAULT_DEVICE_PORT, DEFAULT_HA_DISCOVERY_PREFIX, DEFAULT_MQTT_PORT,
+    DEFAULT_PREFIX, DeviceConfig, DeviceId, parse_broker_url, process_client_id, validate_prefix,
 };
 pub use device::{DeviceInfo, DeviceSnapshot};
 pub use event::{DeviceEvent, Gesture, StateChange};

@@ -1,6 +1,7 @@
 //! The one place that assembles topic strings. Every topic of the contract is a method or an enum
 //! variant here; a test keeps other files from spelling out topic levels.
 
+use super::payload::SERVICE_NAME;
 use crate::model::{ConfigError, DeviceId, validate_prefix};
 
 /// The paths below `<prefix>/status/<id>/`.
@@ -130,6 +131,58 @@ impl CommandPath {
     pub fn parse(level: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.as_str() == level)
     }
+}
+
+/// A Home Assistant entity of one device, announced through MQTT discovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum HaEntity {
+    /// The light itself.
+    Light,
+    /// Touch gestures, an `event` entity.
+    Touch,
+    /// Identify, a `button` entity.
+    Identify,
+}
+
+impl HaEntity {
+    /// Every entity announced per device.
+    pub const ALL: [Self; 3] = [Self::Light, Self::Touch, Self::Identify];
+
+    /// The Home Assistant component (the platform).
+    pub fn component(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Touch => "event",
+            Self::Identify => "button",
+        }
+    }
+
+    /// The entity's part of ids and topics, unique within the device.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Touch => "touch",
+            Self::Identify => "identify",
+        }
+    }
+}
+
+/// `<discovery prefix>/<component>/<node>/<entity>/config`: where Home Assistant expects the
+/// discovery message of one entity. The node is `nanoleaf2mqtt_<id>`; device ids only use
+/// characters Home Assistant accepts there (`a-z0-9-`).
+pub fn ha_discovery(discovery_prefix: &str, device: &DeviceId, entity: HaEntity) -> String {
+    format!(
+        "{discovery_prefix}/{}/{}/{}/config",
+        entity.component(),
+        ha_node(device),
+        entity.key()
+    )
+}
+
+/// `nanoleaf2mqtt_<id>`: the device's id towards Home Assistant (discovery node, device
+/// identifier, start of every unique id).
+pub fn ha_node(device: &DeviceId) -> String {
+    format!("{SERVICE_NAME}_{}", device.as_str())
 }
 
 /// A topic below `<prefix>/set/`, split up. The device id is not validated against the

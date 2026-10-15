@@ -8,7 +8,9 @@ use chrono::Utc;
 use nanoleaf2mqtt::model::{
     ColorMode, DeviceId, DeviceInfo, DeviceSnapshot, Gesture, LightState, Ranges,
 };
-use nanoleaf2mqtt::mqtt::{CONTRACT_VERSION, CommandPath, InfoPayload, StatusPath, Topics, map};
+use nanoleaf2mqtt::mqtt::{
+    CONTRACT_VERSION, CommandPath, HaEntity, InfoPayload, StatusPath, Topics, ha_discovery, map,
+};
 use serde_json::Value;
 
 fn contract() -> String {
@@ -192,6 +194,20 @@ fn gestures_match_the_documented_list() {
         .unwrap();
     let example: Value = serde_json::from_str(row[2].trim_matches('`')).unwrap();
     assert_eq!(example, map::touch_value(Some(1234), Gesture::SwipeUp));
+}
+
+#[test]
+fn home_assistant_discovery_topics_match_the_builder() {
+    let id = DeviceId::new("dev").unwrap();
+    let documented: BTreeSet<String> = first_cells("## Home Assistant")
+        .into_iter()
+        .map(|t| t.replace("<ha>", "homeassistant").replace("<id>", "dev"))
+        .collect();
+    let built: BTreeSet<String> = HaEntity::ALL
+        .into_iter()
+        .map(|entity| ha_discovery("homeassistant", &id, entity))
+        .collect();
+    assert_eq!(documented, built);
 }
 
 #[test]

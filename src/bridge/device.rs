@@ -169,7 +169,8 @@ async fn reread(mqtt: &Mqtt, id: &DeviceId, client: &Client, known: &Known, reas
     }
 }
 
-/// Publishes every value of the snapshot (`full`), or only those that changed.
+/// Publishes every value of the snapshot (`full`), or only those that changed, and hands what
+/// it says about the device to the discovery messages.
 fn publish_snapshot(
     mqtt: &Mqtt,
     id: &DeviceId,
@@ -184,6 +185,7 @@ fn publish_snapshot(
             mqtt.publish_status_if_changed(id, path, val);
         }
     }
+    mqtt.describe_device(id, snapshot);
     if snapshot.effects.is_some() {
         known.effects.send_replace(snapshot.effects.clone());
     }
