@@ -16,18 +16,43 @@ pub(crate) struct Reachability {
 }
 
 impl Reachability {
-    /// Every device starts as not (yet) reachable.
-    pub(crate) fn new<'a>(ids: impl IntoIterator<Item = &'a DeviceId>) -> Self {
+    /// No device yet.
+    pub(crate) fn new() -> Self {
         Self {
-            devices: Mutex::new(ids.into_iter().map(|id| (id.clone(), false)).collect()),
+            devices: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Records the device's reachability and updates `connected`. The lock is held while
-    /// publishing, so two devices changing at once cannot publish an outdated aggregate last.
+    /// Adds a device as not (yet) reachable and updates `connected`.
+    pub(crate) fn add(&self, mqtt: &Mqtt, id: &DeviceId) {
+        let mut devices = self.lock();
+        devices.insert(id.clone(), false);
+        Self::publish(mqtt, &devices);
+    }
+
+    /// Forgets a device and updates `connected`.
+    pub(crate) fn remove(&self, mqtt: &Mqtt, id: &DeviceId) {
+        let mut devices = self.lock();
+        devices.remove(id);
+        Self::publish(mqtt, &devices);
+    }
+
+    /// Records the reachability of a device added before and updates `connected`. The lock is
+    /// held while publishing, so two devices changing at once cannot publish an outdated
+    /// aggregate last.
     pub(crate) fn set(&self, mqtt: &Mqtt, id: &DeviceId, reachable: bool) {
-        let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
-        devices.insert(id.clone(), reachable);
+        let mut devices = self.lock();
+        if let Some(entry) = devices.get_mut(id) {
+            *entry = reachable;
+            Self::publish(mqtt, &devices);
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<DeviceId, bool>> {
+        self.devices.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn publish(mqtt: &Mqtt, devices: &HashMap<DeviceId, bool>) {
         let all = !devices.is_empty() && devices.values().all(|r| *r);
         mqtt.set_all_reachable(all);
     }
