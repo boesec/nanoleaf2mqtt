@@ -117,7 +117,7 @@ impl Bridge {
             tasks.push(nanoleaf::spawn(
                 client.clone(),
                 options.stream.clone(),
-                event_tx,
+                event_tx.clone(),
             ));
             tasks.push(tokio::spawn(device::follow(
                 id.clone(),
@@ -132,6 +132,7 @@ impl Bridge {
                 client,
                 command_rx,
                 effects_rx,
+                event_tx,
             )));
             routes.insert(id, command_tx);
         }

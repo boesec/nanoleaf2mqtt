@@ -139,6 +139,30 @@ async fn an_event_publishes_only_the_changed_topic() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_colour_mode_change_reads_the_effect_that_goes_with_it() {
+    let (_port, device, bridge, mut watcher) = running("s6").await;
+    watcher.barrier("s6/zz-barrier").await;
+
+    // Switched to a colour elsewhere: the device reports hue and mode, but not the effect.
+    let mut root = support::root(true, 30, "*Solid*");
+    root["state"]["colorMode"] = json!("hs");
+    root["state"]["hue"]["value"] = json!(10);
+    device.set_root(root);
+    device.push(
+        1,
+        json!({"events":[{"attr":3,"value":10},{"attr":6,"value":"hs"}]}),
+    );
+    let seen = watcher
+        .until_val(&topic("s6", "effect"), json!("*Solid*"))
+        .await;
+    let last = last_per_topic(&seen);
+    assert_eq!(last[&topic("s6", "colormode")].val(), json!("hs"));
+    assert_eq!(last[&topic("s6", "hue")].val(), json!(10));
+
+    bridge.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lost_device_is_unreachable_and_comes_back_with_a_full_republish() {
     let (port, device, bridge, mut watcher) = running("s3").await;
     watcher.barrier("s3/zz-barrier").await;

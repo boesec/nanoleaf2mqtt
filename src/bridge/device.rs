@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, watch};
 
-use crate::model::{Command, DeviceEvent, DeviceId, DeviceSnapshot};
+use crate::model::{Command, DeviceEvent, DeviceId, DeviceSnapshot, StateChange};
 use crate::mqtt::{Mqtt, SetMessage, map, parse_command};
 use crate::nanoleaf::Client;
 
@@ -67,23 +67,44 @@ pub(crate) async fn follow(
                     let (path, val) = map::change_value(change);
                     mqtt.publish_status(&id, path, val);
                 }
+                // The device does not reliably report the effect that goes with a new colour
+                // mode (`*Solid*` after switching to hs or ct): read it.
+                if changes
+                    .iter()
+                    .any(|c| matches!(c, StateChange::ColorMode(_)))
+                {
+                    reread(&mqtt, &id, &client, &effects, "colour mode change").await;
+                }
             }
             DeviceEvent::EffectChanged(name) => {
                 let (path, val) = map::effect_value(&name);
                 mqtt.publish_status(&id, path, val);
             }
-            DeviceEvent::LayoutChanged => match client.snapshot().await {
-                Ok(snapshot) => publish_snapshot(&mqtt, &id, &snapshot, &effects),
-                Err(error) => tracing::warn!(
-                    device = id.as_str(),
-                    error = error.chain(),
-                    "re-reading the device after a layout change failed"
-                ),
-            },
+            DeviceEvent::LayoutChanged => {
+                reread(&mqtt, &id, &client, &effects, "layout change").await;
+            }
             DeviceEvent::Touch { panel_id, gesture } => {
                 mqtt.publish_touch(&id, panel_id, gesture);
             }
         }
+    }
+}
+
+async fn reread(
+    mqtt: &Mqtt,
+    id: &DeviceId,
+    client: &Client,
+    effects: &watch::Sender<Option<Vec<String>>>,
+    reason: &'static str,
+) {
+    match client.snapshot().await {
+        Ok(snapshot) => publish_snapshot(mqtt, id, &snapshot, effects),
+        Err(error) => tracing::warn!(
+            device = id.as_str(),
+            reason,
+            error = error.chain(),
+            "re-reading the device failed"
+        ),
     }
 }
 
@@ -101,13 +122,16 @@ fn publish_snapshot(
     }
 }
 
-/// Executes the device's commands one after the other. Nothing is published here: what the
-/// device does in response arrives through its event stream.
+/// Executes the device's commands one after the other. What was sent is never published: after
+/// a command the state is read back from the device and handed to [`follow`] like any other
+/// report. The event stream would report the change as well, but only on the device's own tick
+/// of about 1.5 s, and not every effect change.
 pub(crate) async fn execute(
     id: DeviceId,
     client: Client,
     mut commands: mpsc::Receiver<SetMessage>,
     effects: watch::Receiver<Option<Vec<String>>>,
+    reports: mpsc::Sender<DeviceEvent>,
 ) {
     while let Some(message) = commands.recv().await {
         let path = message.path.as_str();
@@ -128,13 +152,34 @@ pub(crate) async fn execute(
                 continue;
             }
         }
-        match client.send(&command).await {
-            Ok(()) => tracing::debug!(device = id.as_str(), command = path, "command sent"),
-            Err(error) => tracing::warn!(
+        if let Err(error) = client.send(&command).await {
+            tracing::warn!(
                 device = id.as_str(),
                 command = path,
                 error = error.chain(),
                 "command failed"
+            );
+            continue;
+        }
+        tracing::debug!(device = id.as_str(), command = path, "command sent");
+        if command == Command::Identify {
+            continue;
+        }
+        match client.snapshot().await {
+            Ok(snapshot) => {
+                if reports
+                    .send(DeviceEvent::Snapshot(Box::new(snapshot)))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Err(error) => tracing::warn!(
+                device = id.as_str(),
+                command = path,
+                error = error.chain(),
+                "reading the state after a command failed"
             ),
         }
     }
