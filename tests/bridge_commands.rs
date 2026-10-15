@@ -102,6 +102,11 @@ async fn after_a_command_the_device_report_is_published_not_what_was_sent() {
     let port = support::start_broker();
     let mut watcher = Watcher::start(port, "c5/status/#").await;
     let (device, bridge) = running(port, "c5").await;
+    // `connected` may go out before the values (republish after the connect); `reachable` comes
+    // after them either way. Only then is the barrier behind every initial value.
+    watcher
+        .until_val("c5/status/dev/reachable", json!(true))
+        .await;
     watcher.barrier("c5/status/zz-barrier").await;
 
     // The device ignores the command, but its hue was changed elsewhere and not reported yet:
