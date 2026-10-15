@@ -61,11 +61,48 @@ pub fn root(on: bool, brightness: u16, effect: &str) -> Value {
 // ---------------------------------------------------------------------------------------------
 // Broker
 
-/// Starts an in-process broker on a free port and returns the port once it accepts connections.
+/// Starts an in-process broker on a free port and returns the port once it completes an MQTT
+/// handshake. A port taken in the meantime (it is free only when picked) means a new attempt on
+/// another port, so a test never ends up on a broker that is not its own.
 pub fn start_broker() -> u16 {
+    for _ in 0..5 {
+        let port = free_port();
+        spawn_broker(port);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if mqtt_handshake(port) {
+                return port;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    panic!("broker did not start");
+}
+
+/// Sends an MQTT 3.1.1 CONNECT and expects an accepting CONNACK.
+fn mqtt_handshake(port: u16) -> bool {
+    use std::io::{Read, Write};
+
+    const CONNECT: [u8; 19] = [
+        0x10, 17, 0, 4, b'M', b'Q', b'T', b'T', 4, 0x02, 0, 60, 0, 5, b'p', b'r', b'o', b'b', b'e',
+    ];
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1))
+    else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let mut ack = [0_u8; 4];
+    let ok = stream.write_all(&CONNECT).is_ok()
+        && stream.read_exact(&mut ack).is_ok()
+        && ack == [0x20, 0x02, 0x00, 0x00];
+    let _ = stream.write_all(&[0xE0, 0x00]);
+    ok
+}
+
+fn spawn_broker(port: u16) {
     use rumqttd::{Broker, Config, ConnectionSettings, RouterConfig, ServerSettings};
 
-    let port = free_port();
     let server = ServerSettings {
         name: "v4".to_owned(),
         listen: SocketAddr::from(([127, 0, 0, 1], port)),
@@ -96,20 +133,23 @@ pub fn start_broker() -> u16 {
     std::thread::spawn(move || {
         let _ = broker.start();
     });
-    let deadline = std::time::Instant::now() + WAIT;
-    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(std::time::Instant::now() < deadline, "broker did not start");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    port
 }
 
+/// A port that was free when picked and has not been handed out before in this process, so
+/// that tests running in parallel never pick the same one.
 pub fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    static HANDED_OUT: Mutex<std::collections::BTreeSet<u16>> =
+        Mutex::new(std::collections::BTreeSet::new());
+    loop {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        if HANDED_OUT.lock().unwrap().insert(port) {
+            return port;
+        }
+    }
 }
 
 fn client_id(role: &str) -> String {
