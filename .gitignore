@@ -6,7 +6,8 @@
 *.env
 raw/
 
-# Local-only working documents (never published, see CLAUDE.md §8)
+# Local-only working documents and agent profiles (they point into the local-only planning)
 Docs/
 CLAUDE.md
 AGENTS.md
+.claude/
