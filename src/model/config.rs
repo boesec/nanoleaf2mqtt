@@ -10,6 +10,18 @@ const MAX_ID_LEN: usize = 64;
 /// Port of an MQTT broker when the URL names none.
 pub const DEFAULT_MQTT_PORT: u16 = 1883;
 
+/// Port of the Nanoleaf OpenAPI, suggested for a new device.
+pub const DEFAULT_DEVICE_PORT: u16 = 16021;
+
+/// Topic prefix until another one is configured.
+pub const DEFAULT_PREFIX: &str = "nanoleaf";
+
+/// The MQTT client id of this process. Unique per process, so a development instance next to
+/// the running service never takes over the service's session.
+pub fn process_client_id() -> String {
+    format!("nanoleaf2mqtt-{}", std::process::id())
+}
+
 /// Invalid configuration value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
@@ -53,6 +65,36 @@ impl DeviceId {
     /// The id as text.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Suggests an id for a device called `name`: lower case, German umlauts spelled out, every
+    /// other run of characters outside `a-z0-9` turned into one `-`. `None` when nothing usable
+    /// is left (for example a name of punctuation only).
+    pub fn suggest(name: &str) -> Option<Self> {
+        let mut slug = String::with_capacity(name.len());
+        let mut dash = false;
+        for c in name.chars().flat_map(char::to_lowercase) {
+            let replacement = match c {
+                'ä' => Some("ae"),
+                'ö' => Some("oe"),
+                'ü' => Some("ue"),
+                'ß' => Some("ss"),
+                _ => None,
+            };
+            if let Some(text) = replacement {
+                slug.push_str(text);
+                dash = false;
+            } else if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                slug.push(c);
+                dash = false;
+            } else if !dash && !slug.is_empty() {
+                slug.push('-');
+                dash = true;
+            }
+        }
+        slug.truncate(MAX_ID_LEN);
+        let slug = slug.trim_end_matches('-');
+        Self::new(slug).ok()
     }
 }
 
@@ -219,6 +261,33 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn suggested_ids() {
+        let suggest = |name: &str| DeviceId::suggest(name).map(|id| id.as_str().to_owned());
+        assert_eq!(suggest("Kellertreppe").as_deref(), Some("kellertreppe"));
+        assert_eq!(
+            suggest("  Küche / Wand 2 ").as_deref(),
+            Some("kueche-wand-2")
+        );
+        assert_eq!(suggest("Große Straße").as_deref(), Some("grosse-strasse"));
+        assert_eq!(
+            suggest("Shapes_Living-Room").as_deref(),
+            Some("shapes-living-room")
+        );
+        assert_eq!(suggest("--"), None);
+        assert_eq!(suggest(""), None);
+        let long = suggest(&"ab ".repeat(40)).unwrap();
+        assert!(long.len() <= 64 && !long.ends_with('-'), "{long}");
+    }
+
+    #[test]
+    fn client_id_names_the_process() {
+        assert_eq!(
+            process_client_id(),
+            format!("nanoleaf2mqtt-{}", std::process::id())
+        );
     }
 
     #[test]

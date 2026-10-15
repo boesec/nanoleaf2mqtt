@@ -7,13 +7,15 @@ mod command;
 mod config;
 mod device;
 mod event;
+mod runtime;
 mod state;
 
 pub use command::{Command, OutOfRange};
 pub use config::{
-    BrokerConfig, ConfigError, DEFAULT_MQTT_PORT, DeviceConfig, DeviceId, parse_broker_url,
-    validate_prefix,
+    BrokerConfig, ConfigError, DEFAULT_DEVICE_PORT, DEFAULT_MQTT_PORT, DEFAULT_PREFIX,
+    DeviceConfig, DeviceId, parse_broker_url, process_client_id, validate_prefix,
 };
 pub use device::{DeviceInfo, DeviceSnapshot};
 pub use event::{DeviceEvent, Gesture, StateChange};
+pub use runtime::{BridgeStatus, ConfigChange, DeviceStatus, PairError};
 pub use state::{ColorMode, LightState, Ranges, ValueRange};
