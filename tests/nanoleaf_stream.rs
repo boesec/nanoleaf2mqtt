@@ -123,7 +123,7 @@ async fn stream_end_reconnects_and_rereads_state() {
         .iter()
         .find(|r| r.url.path() == api("events"))
         .unwrap();
-    assert_eq!(request.url.query(), Some("id=1%2C2%2C3%2C4"));
+    assert_eq!(request.url.query(), Some("id=1,2,3,4"));
 
     // Dropping the receiver ends the task.
     drop(rx);
@@ -270,4 +270,51 @@ async fn failed_health_check_marks_unreachable_and_restarts_stream() {
 
     drop(rx);
     task.await.unwrap();
+}
+
+/// The device only delivers every event kind when the id list reaches it as `id=1,2,3,4`; with
+/// the commas percent-encoded it sends the first kind only. A decoding matcher cannot see the
+/// difference, so this reads the request line exactly as it arrives on the wire.
+#[tokio::test(start_paused = true)]
+async fn event_stream_request_carries_the_id_list_unencoded() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (line_tx, mut lines) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let line_tx = line_tx.clone();
+            tokio::spawn(async move {
+                let mut head = Vec::new();
+                let mut buffer = [0u8; 1024];
+                while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match socket.read(&mut buffer).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => head.extend_from_slice(&buffer[..n]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&head).into_owned();
+                let first = text.lines().next().unwrap_or_default().to_owned();
+                let _ = line_tx.send(first);
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                    )
+                    .await;
+            });
+        }
+    });
+
+    let (tx, rx) = mpsc::channel(16);
+    let task = nanoleaf::spawn(client(address), StreamOptions::default(), tx);
+    let line = loop {
+        let line = lines.recv().await.unwrap();
+        if line.contains("/events") {
+            break line;
+        }
+    };
+    assert_eq!(line, format!("GET {} HTTP/1.1", api("events?id=1,2,3,4")));
+
+    drop(rx);
+    task.abort();
 }

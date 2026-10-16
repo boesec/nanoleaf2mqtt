@@ -150,9 +150,16 @@ impl Client {
     /// answer only; the body is an endless stream.
     pub(crate) async fn open_events(&self, ids: &str) -> Result<reqwest::Response, Error> {
         const OP: &str = "GET /events";
-        let request = self
-            .request(reqwest::Method::GET, "events")
-            .query(&[("id", ids)]);
+        // The device only honours the list with literal commas (`id=1,2,3,4`); a percent-encoded
+        // list (`1%2C2%2C3%2C4`) gets the first event kind only. So the list is appended to the
+        // path verbatim instead of going through the query encoder, which is why it is checked.
+        if ids.is_empty() || !ids.bytes().all(|b| b.is_ascii_digit() || b == b',') {
+            return Err(Error::UnexpectedResponse {
+                operation: OP,
+                detail: "event id list must be digits and commas",
+            });
+        }
+        let request = self.request(reqwest::Method::GET, &format!("events?id={ids}"));
         let response = with_timeout(OP, self.request_timeout, async {
             request.send().await.map_err(|e| Error::http(OP, e))
         })
