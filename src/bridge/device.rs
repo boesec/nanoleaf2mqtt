@@ -1,62 +1,10 @@
 //! The tasks of one device: following its events, executing its commands.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
 use tokio::sync::{mpsc, watch};
 
 use crate::model::{Command, DeviceEvent, DeviceId, DeviceSnapshot, Ranges, StateChange};
 use crate::mqtt::{Mqtt, SetMessage, StatusPath, map, parse_command};
 use crate::nanoleaf::Client;
-
-/// Reachability of every device; `connected` is `2` only while all are reachable.
-#[derive(Debug)]
-pub(crate) struct Reachability {
-    devices: Mutex<HashMap<DeviceId, bool>>,
-}
-
-impl Reachability {
-    /// No device yet.
-    pub(crate) fn new() -> Self {
-        Self {
-            devices: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Adds a device as not (yet) reachable and updates `connected`.
-    pub(crate) fn add(&self, mqtt: &Mqtt, id: &DeviceId) {
-        let mut devices = self.lock();
-        devices.insert(id.clone(), false);
-        Self::publish(mqtt, &devices);
-    }
-
-    /// Forgets a device and updates `connected`.
-    pub(crate) fn remove(&self, mqtt: &Mqtt, id: &DeviceId) {
-        let mut devices = self.lock();
-        devices.remove(id);
-        Self::publish(mqtt, &devices);
-    }
-
-    /// Records the reachability of a device added before and updates `connected`. The lock is
-    /// held while publishing, so two devices changing at once cannot publish an outdated
-    /// aggregate last.
-    pub(crate) fn set(&self, mqtt: &Mqtt, id: &DeviceId, reachable: bool) {
-        let mut devices = self.lock();
-        if let Some(entry) = devices.get_mut(id) {
-            *entry = reachable;
-            Self::publish(mqtt, &devices);
-        }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<DeviceId, bool>> {
-        self.devices.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn publish(mqtt: &Mqtt, devices: &HashMap<DeviceId, bool>) {
-        let all = !devices.is_empty() && devices.values().all(|r| *r);
-        mqtt.set_all_reachable(all);
-    }
-}
 
 /// What the device last reported that its commands are checked against.
 #[derive(Debug)]
@@ -68,18 +16,18 @@ pub(crate) struct Known {
 }
 
 /// Publishes what the device reports, until its event stream ends: the stream's events, and the
-/// state read back after commands (`rereads`), of which only the changed values are published.
+/// state read back after commands (`rereads`). Only values that changed are published, except
+/// after the device (re)connects: then its snapshot is published completely.
 pub(crate) async fn follow(
     id: DeviceId,
     mqtt: Mqtt,
     client: Client,
     mut events: mpsc::Receiver<DeviceEvent>,
     mut rereads: mpsc::Receiver<DeviceSnapshot>,
-    reachability: Arc<Reachability>,
     known: Known,
 ) {
-    // `Reachable` is followed by a snapshot; `reachable = true` goes out after its values, so
-    // a consumer never sees "reachable" next to old values.
+    // `Reachable` is followed by a snapshot; `online = true` goes out after its values, so a
+    // consumer never sees "online" next to old values.
     let mut came_back = false;
     let mut rereads_open = true;
     loop {
@@ -100,23 +48,25 @@ pub(crate) async fn follow(
             DeviceEvent::Reachable => came_back = true,
             DeviceEvent::Unreachable => {
                 came_back = false;
-                let (path, val) = map::reachable_value(false);
+                let (path, val) = map::online_value(false);
                 mqtt.publish_status(&id, path, val);
-                reachability.set(&mqtt, &id, false);
             }
             DeviceEvent::Snapshot(snapshot) => {
-                // After a (re)connect everything is published, changed or not.
-                publish_snapshot(&mqtt, &id, &snapshot, &known, true);
+                // After a (re)connect everything is published, changed or not; the discovery
+                // message follows `online`, which it names for availability.
+                publish_values(&mqtt, &id, &snapshot, &known, true);
                 if std::mem::take(&mut came_back) {
-                    let (path, val) = map::reachable_value(true);
+                    let (path, val) = map::online_value(true);
                     mqtt.publish_status(&id, path, val);
-                    reachability.set(&mqtt, &id, true);
                 }
+                mqtt.describe_device(&id, &snapshot);
             }
             DeviceEvent::StateChanged(changes) => {
+                // The device reports a change made through MQTT again on its event stream; the
+                // read-back after the command has published it already.
                 for change in &changes {
                     let (path, val) = map::change_value(change);
-                    mqtt.publish_status(&id, path, val);
+                    mqtt.publish_status_if_changed(&id, path, val);
                 }
                 if changes
                     .iter()
@@ -135,7 +85,7 @@ pub(crate) async fn follow(
             }
             DeviceEvent::EffectChanged(name) => {
                 let (path, val) = map::effect_value(&name);
-                mqtt.publish_status(&id, path, val);
+                mqtt.publish_status_if_changed(&id, path, val);
             }
             DeviceEvent::LayoutChanged => {
                 reread(&mqtt, &id, &client, &known, "layout change").await;
@@ -169,9 +119,22 @@ async fn reread(mqtt: &Mqtt, id: &DeviceId, client: &Client, known: &Known, reas
     }
 }
 
-/// Publishes every value of the snapshot (`full`), or only those that changed, and hands what
-/// it says about the device to the discovery messages.
+/// Publishes the values of a snapshot (see [`publish_values`]) and hands what it says about the
+/// device to the discovery message.
 fn publish_snapshot(
+    mqtt: &Mqtt,
+    id: &DeviceId,
+    snapshot: &DeviceSnapshot,
+    known: &Known,
+    full: bool,
+) {
+    publish_values(mqtt, id, snapshot, known, full);
+    mqtt.describe_device(id, snapshot);
+}
+
+/// Publishes every value of the snapshot (`full`), or only those that changed, and takes over
+/// its effect list and ranges for the commands.
+fn publish_values(
     mqtt: &Mqtt,
     id: &DeviceId,
     snapshot: &DeviceSnapshot,
@@ -185,7 +148,6 @@ fn publish_snapshot(
             mqtt.publish_status_if_changed(id, path, val);
         }
     }
-    mqtt.describe_device(id, snapshot);
     if snapshot.effects.is_some() {
         known.effects.send_replace(snapshot.effects.clone());
     }
@@ -197,8 +159,9 @@ fn publish_snapshot(
 /// what changed. The event stream would report the change as well, but only on the device's own tick
 /// of about 1.5 s, and not every effect change.
 ///
-/// A message that becomes several device requests (`hs`: hue, then saturation) is checked as a
-/// whole first: if any value is outside the device's range, nothing is sent.
+/// Numbers outside the range the device reported are clamped into it and logged at `warn`
+/// (mqtt-smarthome 2.0, section 3.3); a payload that cannot be read and an unknown effect are
+/// logged and ignored.
 pub(crate) async fn execute(
     id: DeviceId,
     client: Client,
@@ -208,33 +171,41 @@ pub(crate) async fn execute(
     rereads: mpsc::Sender<DeviceSnapshot>,
 ) {
     while let Some(message) = commands.recv().await {
-        let path = message.path.as_str();
-        let commands = match parse_command(message.path, &message.payload) {
-            Ok(commands) => commands,
+        let topic = message.topic.as_str();
+        let payload = String::from_utf8_lossy(&message.payload);
+        let parsed = match parse_command(message.path, &message.payload) {
+            Ok(parsed) => parsed,
             Err(error) => {
-                tracing::warn!(device = id.as_str(), command = path, %error, "invalid command ignored");
+                tracing::warn!(topic, payload = %payload, %error, "invalid command ignored");
                 continue;
             }
         };
+        let mut commands = parsed.commands;
         if let [Command::Effect(name)] = commands.as_slice() {
             if !effect_known(&client, &effects, name).await {
-                tracing::warn!(
-                    device = id.as_str(),
-                    effect = name.as_str(),
-                    "unknown effect ignored"
-                );
+                tracing::warn!(topic, payload = %payload, "unknown effect ignored");
                 continue;
             }
         }
-        if commands.len() > 1 && !in_range(&id, &client, &ranges, &commands, path).await {
-            continue;
+        let mut clamped = parsed.clamped;
+        if needs_range(&commands) {
+            let Some(device_ranges) = current_ranges(&client, &ranges, topic, &payload).await
+            else {
+                continue;
+            };
+            for command in &mut commands {
+                clamped |= command.clamp(&device_ranges);
+            }
+        }
+        if clamped {
+            tracing::warn!(topic, payload = %payload, sent = ?commands, "value out of range, clamped");
         }
         let mut sent = 0;
         for command in &commands {
             if let Err(error) = client.send(command).await {
                 tracing::warn!(
-                    device = id.as_str(),
-                    command = path,
+                    topic,
+                    payload = %payload,
                     error = error.chain(),
                     "command failed"
                 );
@@ -245,7 +216,7 @@ pub(crate) async fn execute(
         if sent == 0 {
             continue;
         }
-        tracing::debug!(device = id.as_str(), command = path, "command sent");
+        tracing::debug!(device = id.as_str(), topic, "command sent");
         if commands == [Command::Identify] {
             continue;
         }
@@ -256,8 +227,7 @@ pub(crate) async fn execute(
                 }
             }
             Err(error) => tracing::warn!(
-                device = id.as_str(),
-                command = path,
+                topic,
                 error = error.chain(),
                 "reading the state after a command failed"
             ),
@@ -265,38 +235,43 @@ pub(crate) async fn execute(
     }
 }
 
-/// Whether every command's value lies within the ranges the device reported (read first if
-/// none are known yet). Logs the first that does not.
-async fn in_range(
-    id: &DeviceId,
+/// Whether any of the commands carries a number the device has a range for.
+fn needs_range(commands: &[Command]) -> bool {
+    commands.iter().any(|c| {
+        matches!(
+            c,
+            Command::Brightness { .. }
+                | Command::Hue(_)
+                | Command::Saturation(_)
+                | Command::ColorTemperature(_)
+        )
+    })
+}
+
+/// The ranges the device reported, read first if none are known yet. `None` (logged) if they
+/// cannot be read: then nothing is sent.
+async fn current_ranges(
     client: &Client,
     ranges: &watch::Receiver<Option<Ranges>>,
-    commands: &[Command],
-    path: &str,
-) -> bool {
+    topic: &str,
+    payload: &str,
+) -> Option<Ranges> {
     let known = *ranges.borrow();
-    let ranges = match known {
-        Some(ranges) => ranges,
+    match known {
+        Some(ranges) => Some(ranges),
         None => match client.snapshot().await {
-            Ok(snapshot) => snapshot.state.ranges,
+            Ok(snapshot) => Some(snapshot.state.ranges),
             Err(error) => {
                 tracing::warn!(
-                    device = id.as_str(),
-                    command = path,
+                    topic,
+                    payload,
                     error = error.chain(),
                     "cannot read the ranges, command ignored"
                 );
-                return false;
+                None
             }
         },
-    };
-    for command in commands {
-        if let Err(error) = command.check(&ranges) {
-            tracing::warn!(device = id.as_str(), command = path, %error, "command out of range ignored");
-            return false;
-        }
     }
-    true
 }
 
 /// Whether the device offers the effect. The list may be older than an effect added in the

@@ -111,7 +111,7 @@ async fn lc_is_written_in_batches_while_running() {
     };
     let bridge = launch(&support::broker(port, "lc2"), &device, &store, options);
     watcher
-        .until_val("lc2/status/dev/reachable", json!(true))
+        .until_val("lc2/status/dev/online", json!(true))
         .await;
     device.push(1, json!({"events":[{"attr":2,"value":61}]}));
     let published = watcher

@@ -75,10 +75,15 @@ fn info_payload_matches_the_documented_example() {
         .find(|r| r[0] == "`<prefix>/info`")
         .unwrap();
     let example: Value = serde_json::from_str(row[2].trim_matches('`')).unwrap();
-    let actual = serde_json::to_value(InfoPayload::new(Utc::now())).unwrap();
+    let actual = serde_json::to_value(InfoPayload::for_process(
+        Utc::now(),
+        Some("host".to_owned()),
+        1,
+    ))
+    .unwrap();
     let keys = |v: &Value| -> BTreeSet<String> { v.as_object().unwrap().keys().cloned().collect() };
     assert_eq!(keys(&example), keys(&actual));
-    for fixed in ["name", "spec", "contract_version"] {
+    for fixed in ["name", "spec", "maintenance", "contract_version"] {
         assert_eq!(example[fixed], actual[fixed], "{fixed}");
     }
 }
@@ -150,7 +155,7 @@ fn a_complete_device_fills_every_status_path() {
         .map(|(path, _)| path)
         .collect();
     // Reachability and touch come from their own events.
-    emitted.insert(map::reachable_value(true).0);
+    emitted.insert(map::online_value(true).0);
     emitted.insert(StatusPath::Touch);
     assert_eq!(emitted, StatusPath::ALL.into_iter().collect());
 
@@ -242,13 +247,55 @@ fn home_assistant_discovery_topics_match_the_builder() {
     let id = DeviceId::new("dev").unwrap();
     let documented: BTreeSet<String> = first_cells("## Home Assistant")
         .into_iter()
+        .filter(|t| t.contains('/'))
         .map(|t| t.replace("<ha>", "homeassistant").replace("<id>", "dev"))
         .collect();
-    let built: BTreeSet<String> = HaEntity::ALL
-        .into_iter()
-        .map(|entity| ha_discovery("homeassistant", &id, entity))
-        .collect();
+    let built: BTreeSet<String> = [ha_discovery("homeassistant", &id)].into();
     assert_eq!(documented, built);
+
+    // The components of the message: one row each, with its platform and unique id.
+    let components = rows("## Home Assistant")
+        .into_iter()
+        .filter(|r| r.len() == 4 && r[0].starts_with("`") && !r[0].contains('/'))
+        .map(|r| {
+            (
+                r[0].trim_matches('`').to_owned(),
+                r[1].trim_matches('`').to_owned(),
+                r[2].trim_matches('`').replace("<id>", "dev"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let topics = Topics::new("nanoleaf").unwrap();
+    let payload = nanoleaf2mqtt::mqtt::discovery::config(
+        &topics,
+        &id,
+        &nanoleaf2mqtt::mqtt::discovery::DiscoveryDevice::default(),
+        true,
+    );
+    let built: Vec<(String, String, String)> = HaEntity::ALL
+        .into_iter()
+        .map(|entity| {
+            let component = &payload["components"][entity.key()];
+            (
+                entity.key().to_owned(),
+                component["p"].as_str().unwrap().to_owned(),
+                component["unique_id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(components, built);
+}
+
+#[test]
+fn the_deviations_from_mqtt_smarthome_are_documented() {
+    let doc = contract();
+    let section = doc
+        .split("\n## ")
+        .find(|s| s.starts_with("Deviations from mqtt-smarthome 2.0"))
+        .expect("a section on the deviations");
+    for topic in ["`-`", "`connected = 1`"] {
+        assert!(section.contains(topic), "{topic} not in the deviations");
+    }
 }
 
 #[test]

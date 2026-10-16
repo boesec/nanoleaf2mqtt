@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
-use super::device::{self, Reachability};
+use super::device;
 use super::{BridgeOptions, SHUTDOWN_TIMEOUT, client, same_broker, same_device};
 use crate::model::{
     BrokerConfig, ConfigChange, DEFAULT_HA_DISCOVERY_PREFIX, DeviceConfig, DeviceId,
@@ -32,11 +32,11 @@ type Routes = Arc<RwLock<HashMap<DeviceId, mpsc::Sender<SetMessage>>>>;
 /// Why a device's tasks are stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stop {
-    /// It starts again right away with a new configuration: its values stay, and it counts as
-    /// not yet reachable once restarted.
+    /// It starts again right away with a new configuration: its values stay until it reports
+    /// again.
     Restart,
-    /// It is no longer followed: its pending `lc` values are persisted, its retained topics
-    /// cleared, and `connected` no longer waits for it.
+    /// It is no longer followed: its pending `lc` values are persisted and its retained topics
+    /// cleared.
     Remove,
     /// The bridge stops: everything stays as it is for the goodbye (`connected = 0`).
     Shutdown,
@@ -57,7 +57,6 @@ pub(super) struct Supervisor {
     options: BridgeOptions,
     devices: BTreeMap<DeviceId, Running>,
     routes: Routes,
-    reachability: Arc<Reachability>,
     /// The ids in `devices`, readable from outside for the status.
     followed: Arc<Mutex<BTreeSet<DeviceId>>>,
 }
@@ -81,7 +80,6 @@ impl Supervisor {
             options,
             devices: BTreeMap::new(),
             routes: Arc::new(RwLock::new(HashMap::new())),
-            reachability: Arc::new(Reachability::new()),
             followed,
         }
     }
@@ -109,6 +107,14 @@ impl Supervisor {
                 continue;
             }
             self.start_device(config);
+        }
+        // Connected only now: the read-back after the connect knows every configured device
+        // and the discovery setting.
+        if let Some(broker) = self.broker.clone() {
+            if let Err(error) = self.mqtt.switch(Some(&broker)).await {
+                tracing::error!(%error, "the configured broker cannot be used");
+                self.broker = None;
+            }
         }
         let mut flush = tokio::time::interval(self.options.lc_flush);
         flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -233,7 +239,7 @@ impl Supervisor {
             address = client.label(),
             "following device"
         );
-        self.reachability.add(&self.mqtt, &id);
+        self.mqtt.track_device(&id);
         let (event_tx, event_rx) = mpsc::channel(EVENT_QUEUE);
         let (effects_tx, effects_rx) = watch::channel(None);
         let (ranges_tx, ranges_rx) = watch::channel(None);
@@ -247,7 +253,6 @@ impl Supervisor {
                 client.clone(),
                 event_rx,
                 reread_rx,
-                Arc::clone(&self.reachability),
                 device::Known {
                     effects: effects_tx,
                     ranges: ranges_tx,
@@ -295,7 +300,6 @@ impl Supervisor {
             .remove(id);
         // Nothing of the device publishes any more.
         if how == Stop::Remove {
-            self.reachability.remove(&self.mqtt, id);
             self.flush().await;
             self.mqtt.clear_device(id);
         }

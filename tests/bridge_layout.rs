@@ -41,7 +41,7 @@ async fn start(prefix: &str, root: Value) -> (u16, FakeDevice, Bridge, Watcher) 
         .until_all(&[
             (&format!("{prefix}/connected"), Some("2")),
             (&format!("{prefix}/status/dev/device"), None),
-            (&format!("{prefix}/status/dev/reachable"), None),
+            (&format!("{prefix}/status/dev/online"), None),
         ])
         .await;
     (port, device, bridge, watcher)

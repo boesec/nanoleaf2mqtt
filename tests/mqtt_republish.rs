@@ -1,4 +1,4 @@
-//! The republish after a connect keeps the promise of `reachable`: it goes out after the values
+//! The republish after a connect keeps the promise of `online`: it goes out after the values
 //! of its device. Forced independent of timing: everything is settled before any broker is
 //! configured, so all of it goes through the republish.
 
@@ -15,8 +15,8 @@ use nanoleaf2mqtt::mqtt::{Mqtt, StatusPath};
 use serde_json::json;
 use support::{FakeDevice, Msg, Watcher};
 
-/// For each device, `reachable` comes after every other status value of that device.
-fn assert_reachable_last(prefix: &str, seen: &[Msg], devices: &[&str]) {
+/// For each device, `online` comes after every other status value of that device.
+fn assert_online_last(prefix: &str, seen: &[Msg], devices: &[&str]) {
     for device in devices {
         let start = format!("{prefix}/status/{device}/");
         let order: Vec<&str> = seen
@@ -24,9 +24,9 @@ fn assert_reachable_last(prefix: &str, seen: &[Msg], devices: &[&str]) {
             .filter_map(|m| m.topic.strip_prefix(&start))
             .collect();
         assert!(order.len() > 1, "{device}: {order:?}");
-        assert_eq!(order.last(), Some(&"reachable"), "{device}: {order:?}");
+        assert_eq!(order.last(), Some(&"online"), "{device}: {order:?}");
         assert_eq!(
-            order.iter().filter(|p| **p == "reachable").count(),
+            order.iter().filter(|p| **p == "online").count(),
             1,
             "{device}: {order:?}"
         );
@@ -34,14 +34,14 @@ fn assert_reachable_last(prefix: &str, seen: &[Msg], devices: &[&str]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_republish_sends_reachable_after_the_values() {
+async fn the_republish_sends_online_after_the_values() {
     let port = support::start_broker();
     let mut watcher = Watcher::start(port, "p1/#").await;
     let (mqtt, _commands) = Mqtt::new(support::options().mqtt);
-    // Reported before any broker exists, `reachable` even first.
+    // Reported before any broker exists, `online` even first.
     for device in ["a", "b"] {
         let id = DeviceId::new(device).unwrap();
-        mqtt.publish_status(&id, StatusPath::Reachable, json!(true));
+        mqtt.publish_status(&id, StatusPath::Online, json!(true));
         mqtt.publish_status(&id, StatusPath::On, json!(true));
         mqtt.publish_status(&id, StatusPath::Brightness, json!(30));
         mqtt.publish_status(&id, StatusPath::Device, json!({"model": "NL42"}));
@@ -53,7 +53,7 @@ async fn the_republish_sends_reachable_after_the_values() {
     let mut wanted: BTreeSet<String> = ["a", "b"]
         .iter()
         .flat_map(|d| {
-            ["reachable", "on", "brightness", "device"].map(|p| format!("p1/status/{d}/{p}"))
+            ["online", "on", "brightness", "device"].map(|p| format!("p1/status/{d}/{p}"))
         })
         .collect();
     let seen = watcher
@@ -62,12 +62,12 @@ async fn the_republish_sends_reachable_after_the_values() {
             wanted.is_empty()
         })
         .await;
-    assert_reachable_last("p1", &seen, &["a", "b"]);
+    assert_online_last("p1", &seen, &["a", "b"]);
     mqtt.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_device_settled_before_the_broker_reports_reachable_last() {
+async fn a_device_settled_before_the_broker_reports_online_last() {
     let device = FakeDevice::start(support::root(true, 42, "Prism")).await;
     let port = support::start_broker();
     let mut watcher = Watcher::start(port, "p2/#").await;
@@ -91,9 +91,7 @@ async fn a_device_settled_before_the_broker_reports_reachable_last() {
         .apply(ConfigChange::Broker(Some(support::broker(port, "p2"))))
         .await
         .unwrap();
-    let seen = watcher
-        .until(|m| m.topic == "p2/status/dev/reachable")
-        .await;
+    let seen = watcher.until(|m| m.topic == "p2/status/dev/online").await;
     for path in [
         "on",
         "brightness",
@@ -107,9 +105,9 @@ async fn a_device_settled_before_the_broker_reports_reachable_last() {
         let topic = format!("p2/status/dev/{path}");
         assert!(
             seen.iter().any(|m| m.topic == topic),
-            "{path} before reachable"
+            "{path} before online"
         );
     }
-    assert_reachable_last("p2", &seen, &["dev"]);
+    assert_online_last("p2", &seen, &["dev"]);
     bridge.shutdown().await;
 }

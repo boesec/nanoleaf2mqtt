@@ -15,7 +15,7 @@ use serde_json::json;
 use support::{FakeDevice, Proxy, Watcher};
 
 const RETAINED: [&str; 11] = [
-    "reachable",
+    "online",
     "on",
     "brightness",
     "hue",
@@ -75,7 +75,7 @@ async fn a_crash_leaves_the_last_will() {
     let mut watcher = Watcher::start(broker_port, "l2/connected").await;
     let (mqtt, _commands, task) =
         Mqtt::spawn(&support::broker(broker_port, "l2"), support::options().mqtt).unwrap();
-    watcher.until_text("l2/connected", "1").await;
+    watcher.until_text("l2/connected", "2").await;
     // Dropping the event loop without a disconnect is what a crash looks like to the broker.
     task.abort();
     let _ = task.await;

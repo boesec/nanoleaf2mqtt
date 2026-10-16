@@ -11,20 +11,23 @@ use serde_json::{Value, json};
 use support::{FakeDevice, Recorded, Watcher};
 
 async fn running(port: u16, prefix: &str) -> (FakeDevice, Bridge) {
-    let mut connected = Watcher::start(port, &format!("{prefix}/connected")).await;
-    let device = FakeDevice::start(support::root(true, 30, "Prism")).await;
+    running_with(port, prefix, support::root(true, 30, "Prism")).await
+}
+
+/// A bridge following a device that reports `root`, once the device was read (ranges and
+/// effect list known: `online` follows them) and the command subscription stands.
+async fn running_with(port: u16, prefix: &str, root: Value) -> (FakeDevice, Bridge) {
+    let online = format!("{prefix}/status/dev/online");
+    let mut watcher = Watcher::start(port, &online).await;
+    let device = FakeDevice::start(root).await;
     let bridge = Bridge::start(
         &support::broker(port, prefix),
         &[support::device("dev", device.address)],
         support::options(),
     )
     .unwrap();
-    // The device is read (ranges and effect list known) ...
-    connected
-        .until_text(&format!("{prefix}/connected"), "2")
-        .await;
-    connected.stop().await;
-    // ... and the command subscription stands.
+    watcher.until_val(&online, json!(true)).await;
+    watcher.stop().await;
     let mut ready = bridge.mqtt().ready();
     tokio::time::timeout(support::WAIT, ready.wait_for(|r| *r))
         .await
@@ -102,11 +105,8 @@ async fn after_a_command_the_device_report_is_published_not_what_was_sent() {
     let port = support::start_broker();
     let mut watcher = Watcher::start(port, "c5/status/#").await;
     let (device, bridge) = running(port, "c5").await;
-    // `connected` may go out before the values (republish after the connect); `reachable` comes
-    // after them either way. Only then is the barrier behind every initial value.
-    watcher
-        .until_val("c5/status/dev/reachable", json!(true))
-        .await;
+    // `online` comes after the initial values. Only then is the barrier behind every one.
+    watcher.until_val("c5/status/dev/online", json!(true)).await;
     watcher.barrier("c5/status/zz-barrier").await;
 
     // The device ignores the command, but its hue was changed elsewhere and not reported yet:
@@ -141,6 +141,58 @@ async fn after_a_command_the_device_report_is_published_not_what_was_sent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_event_stream_echo_of_a_command_publishes_nothing_more() {
+    let port = support::start_broker();
+    let mut watcher = Watcher::start(port, "c7/status/#").await;
+    let (device, bridge) = running(port, "c7").await;
+    watcher.barrier("c7/status/zz-barrier").await;
+
+    // The command: the read-back after it publishes the new brightness.
+    device.set_root(support::root(true, 55, "Prism"));
+    set(port, "c7", "brightness", "55").await;
+    device.next_command().await;
+    watcher
+        .until_val("c7/status/dev/brightness", json!(55))
+        .await;
+    // The device reports the same change on its event stream about 1.5 s later, and the
+    // effect, unchanged, too. A real change in the same frame shows that the frame was handled.
+    device.push(
+        1,
+        json!({"events":[{"attr":2,"value":55},{"attr":3,"value":200}]}),
+    );
+    device.push(3, json!({"events":[{"attr":1,"value":"Prism"}]}));
+    device.push(1, json!({"events":[{"attr":4,"value":10}]}));
+    let mut seen = watcher
+        .until_val("c7/status/dev/hs", json!([200, 10]))
+        .await;
+    seen.extend(watcher.barrier("c7/status/zz-barrier").await);
+    let topics: Vec<&str> = seen.iter().map(|m| m.topic.as_str()).collect();
+    assert_eq!(
+        topics,
+        [
+            "c7/status/dev/hue",
+            "c7/status/dev/hs",
+            "c7/status/dev/sat",
+            "c7/status/dev/hs"
+        ],
+        "one message per changed topic, none for the echo"
+    );
+
+    // A reconnect of the device still publishes everything.
+    device.set_down(true);
+    watcher
+        .until_val("c7/status/dev/online", json!(false))
+        .await;
+    device.set_down(false);
+    let seen = watcher.until_val("c7/status/dev/online", json!(true)).await;
+    for path in ["on", "brightness", "hue", "sat", "hs", "ct", "effect"] {
+        let topic = format!("c7/status/dev/{path}");
+        assert!(seen.iter().any(|m| m.topic == topic), "{path} republished");
+    }
+    bridge.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retained_commands_are_ignored() {
     let port = support::start_broker();
     // Left on the broker before the bridge starts, e.g. by a client that published with retain.
@@ -171,13 +223,12 @@ async fn invalid_commands_send_nothing() {
     for (topic, payload) in [
         ("c3/set/dev/on", "maybe"),
         ("c3/set/dev/on", ""),
-        ("c3/set/dev/brightness", "101"),
         ("c3/set/dev/brightness", "bright"),
-        ("c3/set/dev/brightness", r#"{"val":50,"transition":-1}"#),
-        ("c3/set/dev/hue", "361"),
-        ("c3/set/dev/sat", "-5"),
-        // Outside the range the device reports (1200-6500).
-        ("c3/set/dev/ct", "9000"),
+        ("c3/set/dev/brightness", r#"{"val":50,"transition":"slow"}"#),
+        ("c3/set/dev/brightness", r#"{"value":50}"#),
+        ("c3/set/dev/hue", "true"),
+        ("c3/set/dev/sat", "[5]"),
+        ("c3/set/dev/ct", "warm"),
         // Not in the device's effect list, not even after re-reading it.
         ("c3/set/dev/effect", "No Such Effect"),
         ("c3/set/dev/blink", "true"),
@@ -215,24 +266,21 @@ async fn an_effect_added_since_the_last_read_is_accepted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn hs_becomes_hue_then_saturation_and_is_checked_as_a_whole() {
+async fn hs_becomes_hue_then_saturation_and_is_clamped_per_component() {
     let port = support::start_broker();
-    let mut connected = Watcher::start(port, "c6/connected").await;
     // The device accepts saturation up to 50 only.
     let mut root = support::root(true, 30, "Prism");
     root["state"]["sat"]["max"] = json!(50);
-    let device = FakeDevice::start(root).await;
-    let bridge = Bridge::start(
-        &support::broker(port, "c6"),
-        &[support::device("dev", device.address)],
-        support::options(),
-    )
-    .unwrap();
-    connected.until_text("c6/connected", "2").await;
-    connected.stop().await;
-    bridge.mqtt().ready().wait_for(|r| *r).await.unwrap();
+    let (device, bridge) = running_with(port, "c6", root).await;
 
-    for (payload, hue, sat) in [("120,40", 120, 40), (r#"{"val":[10,20]}"#, 10, 20)] {
+    for (payload, hue, sat) in [
+        ("120,40", 120, 40),
+        (r#"{"val":[10,20]}"#, 10, 20),
+        // Saturation outside the device's range, hue outside the contract's: each clamped.
+        ("120,80", 120, 50),
+        ("361,10", 360, 10),
+        ("400,150", 360, 50),
+    ] {
         set(port, "c6", "hs", payload).await;
         assert_eq!(
             device.next_command().await,
@@ -246,9 +294,8 @@ async fn hs_becomes_hue_then_saturation_and_is_checked_as_a_whole() {
         );
     }
 
-    // Saturation outside the device's range, hue outside the contract's, or unparsable: not
-    // even the hue goes out.
-    for payload in ["120,80", "361,10", "120", "[1,2,3]", "red"] {
+    // Unparsable: not even the hue goes out.
+    for payload in ["120,red", "120", "[1,2,3]", "red"] {
         set(port, "c6", "hs", payload).await;
     }
     set(port, "c6", "on", "true").await;

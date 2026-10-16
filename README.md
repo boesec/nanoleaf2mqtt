@@ -44,9 +44,12 @@ once.
 
 ## MQTT
 
-Topics and payloads are specified in [CONTRACT.md](CONTRACT.md): state under
-`nanoleaf/status/<id>/…`, commands under `nanoleaf/set/<id>/…`, availability in
-`nanoleaf/connected`.
+Topics and payloads follow mqtt-smarthome 2.0 and are specified in
+[CONTRACT.md](CONTRACT.md) (version 2): state under `nanoleaf/status/<id>/…`, commands under
+`nanoleaf/set/<id>/…`, the service in `nanoleaf/connected` (`2` running, `0` down) and each
+device's reachability in `nanoleaf/status/<id>/online`. Home Assistant discovery is on by default.
+Version 1 published `nanoleaf/status/<id>/reachable` instead of `online` and set `connected` to
+`1` while a device was unreachable; the changes are listed in the contract.
 
 Without a subcommand the service runs until Ctrl-C or SIGTERM and then publishes
 `connected = 0`.

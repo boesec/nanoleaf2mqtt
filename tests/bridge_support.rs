@@ -343,6 +343,7 @@ pub fn options() -> BridgeOptions {
             keep_alive: Duration::from_secs(5),
             backoff_initial: Duration::from_millis(50),
             backoff_max: Duration::from_millis(200),
+            ..Timing::default()
         },
         stream: StreamOptions {
             backoff_initial: Duration::from_millis(50),

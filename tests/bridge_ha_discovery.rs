@@ -1,5 +1,6 @@
 //! Home Assistant discovery while the bridge runs: switched on and off, devices started and
-//! stopped, the broker switched or briefly unreachable.
+//! stopped, the broker switched or briefly unreachable, and what a previous run left behind
+//! (version 1 messages migrated, messages of devices gone cleared).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -15,8 +16,13 @@ use support::{FakeDevice, Msg, Proxy, Watcher};
 
 const HA: &str = "homeassistant";
 
-/// The discovery topics of a device.
-fn discovery_topics(id: &str) -> Vec<String> {
+/// The discovery topic of a device.
+fn discovery_topic(id: &str) -> String {
+    format!("{HA}/device/nanoleaf2mqtt_{id}/config")
+}
+
+/// The version 1 discovery topics of a device.
+fn legacy_topics(id: &str) -> Vec<String> {
     ["light/{n}/light", "event/{n}/touch", "button/{n}/identify"]
         .iter()
         .map(|t| {
@@ -42,35 +48,19 @@ fn stop(id: &str) -> ConfigChange {
     }
 }
 
-/// Waits until every discovery topic of `id` was published (non-empty) and returns the last
-/// payload per topic, in the order of [`discovery_topics`].
-async fn until_announced(watcher: &mut Watcher, id: &str) -> Vec<Value> {
-    let wanted = discovery_topics(id);
-    let mut missing: BTreeSet<String> = wanted.iter().cloned().collect();
+/// Waits until the discovery topic of `id` was published (non-empty) and returns its payload.
+async fn until_announced(watcher: &mut Watcher, id: &str) -> Value {
+    let topic = discovery_topic(id);
     let seen = watcher
-        .until(|m| {
-            if !m.payload.is_empty() {
-                missing.remove(&m.topic);
-            }
-            missing.is_empty()
-        })
+        .until(|m| m.topic == topic && !m.payload.is_empty())
         .await;
-    wanted
-        .iter()
-        .map(|topic| {
-            seen.iter()
-                .rev()
-                .find(|m| &m.topic == topic && !m.payload.is_empty())
-                .unwrap()
-                .json()
-        })
-        .collect()
+    seen.last().unwrap().json()
 }
 
 /// Waits for an empty message (a retained clear; the broker forwards it to live subscribers
-/// without the retain flag) on every discovery topic of `id`.
-async fn until_cleared(watcher: &mut Watcher, id: &str) -> Vec<Msg> {
-    let mut missing: BTreeSet<String> = discovery_topics(id).into_iter().collect();
+/// without the retain flag) on every topic in `topics`.
+async fn until_all_cleared(watcher: &mut Watcher, topics: &[String]) -> Vec<Msg> {
+    let mut missing: BTreeSet<String> = topics.iter().cloned().collect();
     watcher
         .until(|m| {
             if m.payload.is_empty() {
@@ -81,22 +71,31 @@ async fn until_cleared(watcher: &mut Watcher, id: &str) -> Vec<Msg> {
         .await
 }
 
-/// The topics a fresh subscriber gets retained (non-empty) below the discovery prefix.
-async fn retained_discovery(port: u16) -> BTreeSet<String> {
+async fn until_cleared(watcher: &mut Watcher, id: &str) -> Vec<Msg> {
+    until_all_cleared(watcher, &[discovery_topic(id)]).await
+}
+
+/// What a fresh subscriber gets retained (non-empty) below the discovery prefix.
+async fn retained_discovery_messages(port: u16) -> Vec<Msg> {
     let mut late = Watcher::start(port, &format!("{HA}/#")).await;
     let seen = late.barrier(&format!("{HA}/zz-barrier")).await;
     late.stop().await;
-    seen.into_iter()
-        .filter(|m| !m.payload.is_empty())
+    seen.into_iter().filter(|m| !m.payload.is_empty()).collect()
+}
+
+async fn retained_discovery(port: u16) -> BTreeSet<String> {
+    retained_discovery_messages(port)
+        .await
+        .into_iter()
         .map(|m| m.topic)
         .collect()
 }
 
 fn announced(ids: &[&str]) -> BTreeSet<String> {
-    ids.iter().flat_map(|id| discovery_topics(id)).collect()
+    ids.iter().map(|id| discovery_topic(id)).collect()
 }
 
-/// A bridge following `devices` on a fresh broker, once every device is reachable.
+/// A bridge following `devices` on a fresh broker, once its session is set up.
 async fn started(
     prefix: &str,
     devices: &[(&str, &FakeDevice)],
@@ -105,11 +104,10 @@ async fn started(
     let port = support::start_broker();
     let watcher = Watcher::start(port, "#").await;
     let (bridge, handle) = launch(support::broker(port, prefix), devices, ha_discovery);
-    let mut connected = Watcher::start(port, &format!("{prefix}/connected")).await;
-    connected
-        .until_text(&format!("{prefix}/connected"), "2")
-        .await;
-    connected.stop().await;
+    tokio::time::timeout(support::WAIT, bridge.mqtt().ready().wait_for(|r| *r))
+        .await
+        .unwrap()
+        .unwrap();
     (port, watcher, bridge, handle)
 }
 
@@ -136,6 +134,7 @@ fn launch(
 async fn discovery_follows_the_switch_at_runtime() {
     let device = FakeDevice::start(support::root(true, 30, "Prism")).await;
     let (port, mut watcher, bridge, handle) = started("h1", &[("dev", &device)], false).await;
+    watcher.until_val("h1/status/dev/online", json!(true)).await;
     // Off: nothing below the discovery prefix.
     let seen = watcher.barrier("zz/barrier").await;
     assert!(
@@ -144,8 +143,10 @@ async fn discovery_follows_the_switch_at_runtime() {
     );
 
     handle.apply(ConfigChange::HaDiscovery(true)).await.unwrap();
-    let payloads = until_announced(&mut watcher, "dev").await;
-    let light = &payloads[0];
+    let payload = until_announced(&mut watcher, "dev").await;
+    let light = &payload["components"]["light"];
+    assert_eq!(light["p"], "light");
+    assert_eq!(light["unique_id"], "nanoleaf2mqtt_dev_light");
     assert_eq!(light["state_topic"], "h1/status/dev/on");
     assert_eq!(light["hs_command_topic"], "h1/set/dev/hs");
     assert_eq!(
@@ -157,7 +158,7 @@ async fn discovery_follows_the_switch_at_runtime() {
         (json!(1200), json!(6500))
     );
     assert_eq!(
-        light["device"],
+        payload["device"],
         json!({
             "identifiers": ["nanoleaf2mqtt_dev"],
             "name": "Test Shapes",
@@ -166,10 +167,16 @@ async fn discovery_follows_the_switch_at_runtime() {
             "sw_version": "12.0.3"
         })
     );
-    assert_eq!(payloads[1]["state_topic"], "h1/status/dev/touch");
-    assert_eq!(payloads[2]["command_topic"], "h1/set/dev/identify");
+    let touch = &payload["components"]["touch"];
+    assert_eq!(touch["p"], "event");
+    assert_eq!(touch["state_topic"], "h1/status/dev/touch");
+    let identify = &payload["components"]["identify"];
+    assert_eq!(identify["p"], "button");
+    assert_eq!(identify["command_topic"], "h1/set/dev/identify");
+    // The device is online before the message names its `online` topic.
+    assert_eq!(payload["availability"][1]["topic"], "h1/status/dev/online");
     // Nothing about how the device or the broker is reached.
-    let all = format!("{payloads:?}");
+    let all = payload.to_string();
     for secret in [
         support::TOKEN,
         "127.0.0.1",
@@ -227,12 +234,12 @@ async fn devices_started_and_stopped_are_announced_and_cleared() {
     added.set_root(root);
     support::publish(port, "h2/set/added/on", b"true", false).await;
     added.next_command().await;
-    let light = discovery_topics("added").remove(0);
+    let topic = discovery_topic("added");
     let seen = watcher
         .until(|m| {
-            m.topic == light
+            m.topic == topic
                 && !m.payload.is_empty()
-                && m.json()["effect_list"] == json!(["Blaze", "New One"])
+                && m.json()["components"]["light"]["effect_list"] == json!(["Blaze", "New One"])
         })
         .await;
     assert!(
@@ -240,7 +247,7 @@ async fn devices_started_and_stopped_are_announced_and_cleared() {
         "the other device is not announced again: {seen:?}"
     );
 
-    // Stopped: its discovery topics are cleared, the other device's stay.
+    // Stopped: its discovery topic is cleared, the other device's stays.
     handle.apply(stop("added")).await.unwrap();
     until_cleared(&mut watcher, "added").await;
     assert_eq!(retained_discovery(port).await, announced(&["keep"]));
@@ -260,15 +267,13 @@ async fn discovery_follows_a_broker_switch() {
         .await
         .unwrap();
     // Republished on the new broker, pointing at the new prefix.
-    let payloads = until_announced(&mut new, "dev").await;
-    for payload in &payloads {
-        assert_eq!(payload["availability"][0]["topic"], "h4/connected");
-        assert_eq!(
-            payload["availability"][1]["topic"],
-            "h4/status/dev/reachable"
-        );
-    }
-    assert_eq!(payloads[0]["state_topic"], "h4/status/dev/on");
+    let payload = until_announced(&mut new, "dev").await;
+    assert_eq!(payload["availability"][0]["topic"], "h4/connected");
+    assert_eq!(payload["availability"][1]["topic"], "h4/status/dev/online");
+    assert_eq!(
+        payload["components"]["light"]["state_topic"],
+        "h4/status/dev/on"
+    );
     assert_eq!(retained_discovery(new_port).await, announced(&["dev"]));
     bridge.shutdown().await;
 }
@@ -306,5 +311,113 @@ async fn switched_off_while_the_broker_is_unreachable_is_cleared_on_reconnect() 
     proxy.open().await;
     until_cleared(&mut watcher, "dev").await;
     assert_eq!(retained_discovery(port).await, BTreeSet::new());
+    bridge.shutdown().await;
+}
+
+/// A version 1 message as an instance under `prefix` published it (shortened to what matters
+/// here: the availability that tells whose it is).
+fn legacy_payload(prefix: &str, id: &str, key: &str) -> Vec<u8> {
+    json!({
+        "unique_id": format!("nanoleaf2mqtt_{id}_{key}"),
+        "availability": [
+            {"topic": format!("{prefix}/connected"), "value_template": "{{ value }}"},
+            {"topic": format!("{prefix}/status/{id}/reachable")},
+        ],
+    })
+    .to_string()
+    .into_bytes()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_previous_run_is_migrated_and_cleaned_up() {
+    let device = FakeDevice::start(support::root(true, 30, "Prism")).await;
+    let port = support::start_broker();
+    // Left by version 1 of this instance (prefix h6) for the configured device and for one
+    // removed while the service was down; by a version 2 run for another removed one; and by
+    // others: another instance on the same broker (prefix h7) and another service.
+    let mut left: Vec<(String, Vec<u8>)> = Vec::new();
+    for (id, prefix) in [("dev", "h6"), ("gone", "h6"), ("theirs", "h7")] {
+        for (topic, key) in legacy_topics(id)
+            .into_iter()
+            .zip(["light", "touch", "identify"])
+        {
+            left.push((topic, legacy_payload(prefix, id, key)));
+        }
+    }
+    let device_config = |prefix: &str| {
+        json!({"availability": [{"topic": format!("{prefix}/connected")}]})
+            .to_string()
+            .into_bytes()
+    };
+    left.push((discovery_topic("old"), device_config("h6")));
+    left.push((discovery_topic("other"), device_config("h7")));
+    let foreign = format!("{HA}/light/zigbee2mqtt_lamp/light/config");
+    left.push((foreign.clone(), br#"{"unique_id":"lamp"}"#.to_vec()));
+    for (topic, payload) in &left {
+        support::publish(port, topic, payload, true).await;
+    }
+
+    let mut watcher = Watcher::start(port, &format!("{HA}/#")).await;
+    // The retained messages first, up to the barrier.
+    watcher.barrier(&format!("{HA}/zz-barrier")).await;
+    let (bridge, _handle) = launch(support::broker(port, "h6"), &[("dev", &device)], true);
+
+    // The configured device: Home Assistant's migration request on every version 1 topic, then
+    // the device-based message, then the version 1 topics cleared, in this order.
+    let legacy = legacy_topics("dev");
+    let seen = until_all_cleared(&mut watcher, &legacy).await;
+    let ours: Vec<&Msg> = seen
+        .iter()
+        .filter(|m| legacy.contains(&m.topic) || m.topic == discovery_topic("dev"))
+        .collect();
+    let steps: Vec<String> = ours
+        .iter()
+        .map(|m| {
+            let what = if m.payload.is_empty() {
+                "clear".to_owned()
+            } else if m.topic == discovery_topic("dev") {
+                "device".to_owned()
+            } else {
+                m.text()
+            };
+            format!("{} {what}", m.topic)
+        })
+        .collect();
+    let mut sorted = legacy.clone();
+    sorted.sort();
+    let mut expected: Vec<String> = sorted
+        .iter()
+        .map(|t| format!("{t} {{\"migrate_discovery\":true}}"))
+        .collect();
+    expected.push(format!("{} device", discovery_topic("dev")));
+    expected.extend(sorted.iter().map(|t| format!("{t} clear")));
+    assert_eq!(steps, expected);
+    let payload = ours
+        .iter()
+        .find(|m| m.topic == discovery_topic("dev"))
+        .unwrap()
+        .json();
+    let unique: Vec<&str> = ["light", "touch", "identify"]
+        .iter()
+        .map(|k| payload["components"][k]["unique_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        unique,
+        [
+            "nanoleaf2mqtt_dev_light",
+            "nanoleaf2mqtt_dev_touch",
+            "nanoleaf2mqtt_dev_identify"
+        ],
+        "the entities keep their unique ids"
+    );
+
+    // What is left: this instance's current message and the others' untouched.
+    tokio::time::timeout(support::WAIT, bridge.mqtt().ready().wait_for(|r| *r))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut expected: BTreeSet<String> = legacy_topics("theirs").into_iter().collect();
+    expected.extend([discovery_topic("dev"), discovery_topic("other"), foreign]);
+    assert_eq!(retained_discovery(port).await, expected);
     bridge.shutdown().await;
 }

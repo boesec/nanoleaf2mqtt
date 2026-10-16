@@ -33,6 +33,65 @@ async fn open() -> (tempfile::TempDir, Store) {
     (dir, store)
 }
 
+/// A store as the first schema version left it, with discovery off, a prefix and a device: it
+/// opens with the later migrations applied, its data kept and discovery switched on.
+#[tokio::test]
+async fn a_store_of_the_first_schema_version_keeps_working() {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    // Only the first migration, applied the way the store applies migrations.
+    let first = dir.path().join("first");
+    std::fs::create_dir_all(&first).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    std::fs::copy(
+        source.join("0001_initial.sql"),
+        first.join("0001_initial.sql"),
+    )
+    .unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(data.join(DB_FILE_NAME))
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::migrate::Migrator::new(first.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE settings SET topic_prefix = 'lights', ha_discovery = 0")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, name, host, port, token, enabled, created_at, updated_at) \
+         VALUES ('hall', 'Hall', '192.0.2.10', 16021, NULL, 1, 'x', 'x')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let store = Store::open(&data).await.unwrap();
+    let settings = store.settings().await.unwrap();
+    assert!(settings.ha_discovery, "switched on by the second migration");
+    assert_eq!(settings.topic_prefix, "lights");
+    let devices = store.devices().await.unwrap();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].id, id("hall"));
+    // Switching it off sticks: the migration runs once.
+    store.set_ha_discovery(false).await.unwrap();
+    store.close().await;
+    let store = Store::open(&data).await.unwrap();
+    assert!(!store.settings().await.unwrap().ha_discovery);
+}
+
 #[tokio::test]
 async fn migrations_apply_on_an_empty_directory_with_defaults() {
     let (_dir, store) = open().await;
@@ -42,7 +101,10 @@ async fn migrations_apply_on_an_empty_directory_with_defaults() {
     assert_eq!(settings.broker_username, None);
     assert!(settings.broker_password.is_none());
     assert_eq!(settings.topic_prefix, "nanoleaf");
-    assert!(!settings.ha_discovery);
+    assert!(
+        settings.ha_discovery,
+        "Home Assistant discovery is on by default"
+    );
     assert_eq!(settings.ha_discovery_prefix, "homeassistant");
     assert!(
         settings.broker_config().unwrap().is_none(),

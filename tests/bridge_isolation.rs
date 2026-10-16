@@ -48,8 +48,8 @@ async fn an_unreachable_device_does_not_stop_the_other() {
     let (mut good_up, mut bad_down) = (false, false);
     let all = watcher
         .until(|m| {
-            good_up |= m.topic == "i1/status/good/reachable" && m.val() == json!(true);
-            bad_down |= m.topic == "i1/status/bad/reachable" && m.val() == json!(false);
+            good_up |= m.topic == "i1/status/good/online" && m.val() == json!(true);
+            bad_down |= m.topic == "i1/status/bad/online" && m.val() == json!(false);
             good_up && bad_down
         })
         .await;
@@ -57,10 +57,15 @@ async fn an_unreachable_device_does_not_stop_the_other() {
         all.iter().any(|m| m.topic == "i1/status/good/brightness"),
         "the good device's state is published"
     );
-    assert!(
-        all.iter()
-            .all(|m| m.topic != "i1/connected" || m.text() == "1"),
-        "connected never 2 with one device down"
+    let connected: Vec<String> = all
+        .iter()
+        .filter(|m| m.topic == "i1/connected")
+        .map(support::Msg::text)
+        .collect();
+    assert_eq!(
+        connected,
+        ["2"],
+        "the bridge is up, whatever one device does"
     );
     let mut ready = bridge.mqtt().ready();
     ready.wait_for(|r| *r).await.unwrap();
@@ -69,6 +74,25 @@ async fn an_unreachable_device_does_not_stop_the_other() {
 
     let later = watcher.barrier("i1/zz-barrier").await;
     assert!(later.iter().all(|m| m.topic != "i1/connected"), "{later:?}");
+
+    // What a consumer starting now sees: the bridge up, one device online, the other not.
+    let mut late = Watcher::start(port, "i1/#").await;
+    let retained = late.barrier("i1/zz-barrier").await;
+    let text = |topic: &str| {
+        retained
+            .iter()
+            .rev()
+            .find(|m| m.topic == topic)
+            .map(support::Msg::text)
+            .unwrap_or_else(|| panic!("{topic} retained: {retained:?}"))
+    };
+    assert_eq!(text("i1/connected"), "2");
+    let val = |topic: &str| {
+        serde_json::from_str::<serde_json::Value>(&text(topic)).unwrap()["val"].clone()
+    };
+    assert_eq!(val("i1/status/good/online"), json!(true));
+    assert_eq!(val("i1/status/bad/online"), json!(false));
+    late.stop().await;
     bridge.shutdown().await;
 }
 
@@ -94,7 +118,7 @@ async fn a_hanging_device_does_not_block_the_other() {
     .unwrap();
 
     watcher
-        .until_val("i2/status/good/reachable", json!(true))
+        .until_val("i2/status/good/online", json!(true))
         .await;
     let mut ready = bridge.mqtt().ready();
     ready.wait_for(|r| *r).await.unwrap();

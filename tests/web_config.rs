@@ -282,20 +282,22 @@ async fn the_overview_shows_broker_and_device_state() {
 #[tokio::test]
 async fn the_home_assistant_switch_is_stored_and_sent() {
     let mut ui = Ui::signed_in().await;
-    assert!(!ui.get("/settings").await.body.contains("checked"));
-    ui.post("/settings/discovery", &[("ha_discovery", "true")])
+    // On by default.
+    assert!(ui.get("/settings").await.body.contains("checked"));
+    ui.post("/settings/discovery", &[])
         .await
         .assert_redirect("/settings?notice=saved");
-    assert!(ui.store.settings().await.unwrap().ha_discovery);
-    assert!(ui.get("/settings").await.body.contains("checked"));
-    ui.post("/settings/discovery", &[]).await;
     assert!(!ui.store.settings().await.unwrap().ha_discovery);
+    assert!(!ui.get("/settings").await.body.contains("checked"));
+    ui.post("/settings/discovery", &[("ha_discovery", "true")])
+        .await;
+    assert!(ui.store.settings().await.unwrap().ha_discovery);
     let changes = ui.take_changes();
     assert!(matches!(
         changes.as_slice(),
         [
-            ConfigChange::HaDiscovery(true),
-            ConfigChange::HaDiscovery(false)
+            ConfigChange::HaDiscovery(false),
+            ConfigChange::HaDiscovery(true)
         ]
     ));
 }

@@ -10,10 +10,10 @@ use super::topic::CommandPath;
 use crate::model::Command;
 
 /// Version of the MQTT contract (`CONTRACT.md`) this crate implements.
-pub const CONTRACT_VERSION: u32 = 1;
+pub const CONTRACT_VERSION: u32 = 2;
 
-/// The wire convention, as published in `info.spec`.
-pub const SPEC: &str = "mqtt-smarthome 2.0";
+/// The version of mqtt-smarthome implemented, as published in `info.spec`.
+pub const SPEC: &str = "2.0";
 
 /// Name of the service in `info`.
 pub const SERVICE_NAME: &str = "nanoleaf2mqtt";
@@ -43,32 +43,59 @@ pub struct EventPayload {
     pub ts: i64,
 }
 
-/// The retained `info` payload.
+/// The retained `info` payload (mqtt-smarthome 2.0, section 6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InfoPayload {
     /// Service name.
     pub name: String,
     /// Service version.
     pub version: String,
-    /// The wire convention, [`SPEC`].
+    /// The mqtt-smarthome version implemented, [`SPEC`].
     pub spec: String,
+    /// Name of the host the service runs on; left out when it cannot be found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Process id.
+    pub pid: u32,
+    /// When the service started, RFC 3339.
+    pub started: String,
+    /// Whether the maintenance topics are enabled: this service has none.
+    pub maintenance: bool,
     /// [`CONTRACT_VERSION`].
     pub contract_version: u32,
-    /// When the service started, RFC 3339.
-    pub started_at: String,
 }
 
 impl InfoPayload {
-    /// The payload of this build, started at `started_at`.
-    pub fn new(started_at: DateTime<Utc>) -> Self {
+    /// The payload of this process, started at `started`.
+    pub fn new(started: DateTime<Utc>) -> Self {
+        Self::for_process(started, host_name(), std::process::id())
+    }
+
+    /// The payload of a process on `host` with `pid`, started at `started`.
+    pub fn for_process(started: DateTime<Utc>, host: Option<String>, pid: u32) -> Self {
         Self {
             name: SERVICE_NAME.to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             spec: SPEC.to_owned(),
+            host,
+            pid,
+            started: started.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            maintenance: false,
             contract_version: CONTRACT_VERSION,
-            started_at: started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         }
     }
+}
+
+/// The host name: the kernel's on Linux, otherwise the environment's; `None` if neither says.
+pub fn host_name() -> Option<String> {
+    let from_file = ["/proc/sys/kernel/hostname", "/etc/hostname"]
+        .into_iter()
+        .find_map(|path| std::fs::read_to_string(path).ok());
+    from_file
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
 }
 
 /// Remembers the last value and its last change per topic, in memory.
@@ -129,52 +156,86 @@ pub enum PayloadError {
     },
 }
 
-/// Parses the payload of a command topic: a plain value or `{"val": …}`. Ranges the device
-/// reports are checked later, against the device's own ranges.
+/// A number from a command payload, and whether it had to be clamped.
+type Number = (u16, bool);
+
+/// A command payload, parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedCommand {
+    /// The device commands, in the order they are sent.
+    pub commands: Vec<Command>,
+    /// Whether a number lay outside the command's fixed range and was clamped into it.
+    pub clamped: bool,
+}
+
+/// Parses the payload of a command topic: a plain value or `{"val": …}`.
+///
+/// Numbers are rounded to whole numbers and clamped into the command's fixed range (brightness
+/// and saturation 0–100, hue 0–360, colour temperature and transition 0–65535); the ranges the
+/// device reports are applied later. A payload that is no number where one is needed is an
+/// error.
 ///
 /// Every command is one device command, except `hs`: hue, then saturation, both parsed before
 /// either is returned.
-pub fn parse_command(path: CommandPath, payload: &[u8]) -> Result<Vec<Command>, PayloadError> {
+pub fn parse_command(path: CommandPath, payload: &[u8]) -> Result<ParsedCommand, PayloadError> {
     if path == CommandPath::HueSaturation {
         let val = parse_value(payload)?.0;
-        let (hue, saturation) = parse_hs(&val)?;
-        return Ok(vec![Command::Hue(hue), Command::Saturation(saturation)]);
+        let ((hue, hue_clamped), (saturation, saturation_clamped)) = parse_hs(&val)?;
+        return Ok(ParsedCommand {
+            commands: vec![Command::Hue(hue), Command::Saturation(saturation)],
+            clamped: hue_clamped || saturation_clamped,
+        });
     }
-    parse_single(path, payload).map(|command| vec![command])
+    let (command, clamped) = parse_single(path, payload)?;
+    Ok(ParsedCommand {
+        commands: vec![command],
+        clamped,
+    })
 }
 
-fn parse_single(path: CommandPath, payload: &[u8]) -> Result<Command, PayloadError> {
+fn parse_single(path: CommandPath, payload: &[u8]) -> Result<(Command, bool), PayloadError> {
     if path == CommandPath::Identify {
-        return Ok(Command::Identify);
+        return Ok((Command::Identify, false));
     }
     let (val, transition) = parse_value(payload)?;
     match path {
-        CommandPath::On => parse_bool(&val).map(Command::On),
+        CommandPath::On => parse_bool(&val).map(|on| (Command::On(on), false)),
         CommandPath::Brightness => {
-            let value = parse_int(&val, 100)?;
-            let transition = match transition {
-                None | Some(Value::Null) => None,
-                Some(t) => Some(parse_int(&t, u16::MAX).map_err(|_| PayloadError::Invalid {
-                    expected: "transition in whole seconds",
-                })?),
+            let (value, value_clamped) = parse_number(&val, 100)?;
+            let (transition, transition_clamped) = match transition {
+                None | Some(Value::Null) => (None, false),
+                Some(t) => {
+                    let (seconds, clamped) =
+                        parse_number(&t, u16::MAX).map_err(|_| PayloadError::Invalid {
+                            expected: "transition in seconds",
+                        })?;
+                    (Some(seconds), clamped)
+                }
             };
-            Ok(Command::Brightness { value, transition })
+            Ok((
+                Command::Brightness { value, transition },
+                value_clamped || transition_clamped,
+            ))
         }
-        CommandPath::Hue => parse_int(&val, 360).map(Command::Hue),
+        CommandPath::Hue => parse_number(&val, 360).map(|(v, c)| (Command::Hue(v), c)),
         CommandPath::HueSaturation => Err(PayloadError::Invalid {
             expected: "a single command",
         }),
-        CommandPath::Saturation => parse_int(&val, 100).map(Command::Saturation),
-        CommandPath::ColorTemperature => parse_int(&val, u16::MAX).map(Command::ColorTemperature),
+        CommandPath::Saturation => {
+            parse_number(&val, 100).map(|(v, c)| (Command::Saturation(v), c))
+        }
+        CommandPath::ColorTemperature => {
+            parse_number(&val, u16::MAX).map(|(v, c)| (Command::ColorTemperature(v), c))
+        }
         CommandPath::Effect => match val {
             Value::String(name) if !name.trim().is_empty() => {
-                Ok(Command::Effect(name.trim().to_owned()))
+                Ok((Command::Effect(name.trim().to_owned()), false))
             }
             _ => Err(PayloadError::Invalid {
                 expected: "an effect name",
             }),
         },
-        CommandPath::Identify => Ok(Command::Identify),
+        CommandPath::Identify => Ok((Command::Identify, false)),
     }
 }
 
@@ -199,8 +260,8 @@ fn parse_value(payload: &[u8]) -> Result<(Value, Option<Value>), PayloadError> {
     }
 }
 
-/// Hue and saturation from `"h,s"` or `[h, s]`.
-fn parse_hs(val: &Value) -> Result<(u16, u16), PayloadError> {
+/// Hue and saturation from `"h,s"` or `[h, s]`, each with whether it was clamped.
+fn parse_hs(val: &Value) -> Result<(Number, Number), PayloadError> {
     const EXPECTED: PayloadError = PayloadError::Invalid {
         expected: "hue and saturation as \"h,s\" or [h, s]",
     };
@@ -218,8 +279,8 @@ fn parse_hs(val: &Value) -> Result<(u16, u16), PayloadError> {
         },
         _ => return Err(EXPECTED),
     };
-    let hue = parse_int(&hue, 360).map_err(|_| EXPECTED)?;
-    let saturation = parse_int(&saturation, 100).map_err(|_| EXPECTED)?;
+    let hue = parse_number(&hue, 360).map_err(|_| EXPECTED)?;
+    let saturation = parse_number(&saturation, 100).map_err(|_| EXPECTED)?;
     Ok((hue, saturation))
 }
 
@@ -243,23 +304,23 @@ fn parse_bool(val: &Value) -> Result<bool, PayloadError> {
     }
 }
 
-/// A whole number `0..=max`; `50.0` counts as whole, `50.5` does not.
-fn parse_int(val: &Value, max: u16) -> Result<u16, PayloadError> {
-    let invalid = PayloadError::Invalid {
-        expected: "a whole number in range",
-    };
+/// A number (JSON or decimal text), rounded to a whole number and clamped into `0..=max`; with
+/// whether it had to be clamped.
+fn parse_number(val: &Value, max: u16) -> Result<Number, PayloadError> {
     let number = match val {
         Value::Number(n) => n.as_f64(),
         Value::String(s) => s.trim().parse::<f64>().ok(),
         _ => None,
     }
-    .ok_or(invalid.clone())?;
-    if number.fract() != 0.0 || number < 0.0 || number > f64::from(max) {
-        return Err(invalid);
-    }
-    // In range and whole, so the conversion is exact.
+    .filter(|n| n.is_finite())
+    .ok_or(PayloadError::Invalid {
+        expected: "a number",
+    })?;
+    let rounded = number.round();
+    let clamped = rounded.clamp(0.0, f64::from(max));
+    // Whole and within `0..=max`, so the conversion is exact.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Ok(number as u16)
+    Ok((clamped as u16, clamped != rounded))
 }
 
 #[cfg(test)]
@@ -269,9 +330,15 @@ mod tests {
     use super::*;
 
     fn parse(path: CommandPath, payload: &str) -> Result<Command, PayloadError> {
-        let mut commands = parse_command(path, payload.as_bytes())?;
-        assert_eq!(commands.len(), 1, "{path:?} {payload}");
-        Ok(commands.remove(0))
+        let (command, clamped) = parse_clamped(path, payload)?;
+        assert!(!clamped, "{path:?} {payload} was clamped");
+        Ok(command)
+    }
+
+    fn parse_clamped(path: CommandPath, payload: &str) -> Result<(Command, bool), PayloadError> {
+        let mut parsed = parse_command(path, payload.as_bytes())?;
+        assert_eq!(parsed.commands.len(), 1, "{path:?} {payload}");
+        Ok((parsed.commands.remove(0), parsed.clamped))
     }
 
     #[test]
@@ -316,17 +383,25 @@ mod tests {
         let at = DateTime::parse_from_rfc3339("2026-10-15T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let value = serde_json::to_value(InfoPayload::new(at)).unwrap();
+        let value =
+            serde_json::to_value(InfoPayload::for_process(at, Some("box".to_owned()), 42)).unwrap();
         assert_eq!(
             value,
             json!({
                 "name": "nanoleaf2mqtt",
                 "version": env!("CARGO_PKG_VERSION"),
-                "spec": "mqtt-smarthome 2.0",
-                "contract_version": 1,
-                "started_at": "2026-10-15T12:00:00.000Z",
+                "spec": "2.0",
+                "host": "box",
+                "pid": 42,
+                "started": "2026-10-15T12:00:00.000Z",
+                "maintenance": false,
+                "contract_version": 2,
             })
         );
+        // A host that cannot be found is left out, not invented.
+        let value = serde_json::to_value(InfoPayload::for_process(at, None, 42)).unwrap();
+        assert!(value.get("host").is_none());
+        assert_eq!(InfoPayload::new(at).pid, std::process::id());
     }
 
     #[test]
@@ -383,7 +458,16 @@ mod tests {
                 transition: None
             })
         );
+        // Rounded, not rejected.
+        assert_eq!(
+            parse(CommandPath::Brightness, "50.5"),
+            Ok(Command::Brightness {
+                value: 51,
+                transition: None
+            })
+        );
         assert_eq!(parse(CommandPath::Hue, "360"), Ok(Command::Hue(360)));
+        assert_eq!(parse(CommandPath::Hue, "359.4"), Ok(Command::Hue(359)));
         assert_eq!(
             parse(CommandPath::Saturation, "0"),
             Ok(Command::Saturation(0))
@@ -393,18 +477,56 @@ mod tests {
             Ok(Command::ColorTemperature(2700))
         );
         for (path, bad) in [
-            (CommandPath::Brightness, "101"),
-            (CommandPath::Brightness, "-1"),
-            (CommandPath::Brightness, "50.5"),
             (CommandPath::Brightness, "bright"),
-            (CommandPath::Brightness, r#"{"val":50,"transition":-1}"#),
             (CommandPath::Brightness, r#"{"val":50,"transition":"slow"}"#),
-            (CommandPath::Hue, "361"),
-            (CommandPath::Saturation, "101"),
-            (CommandPath::ColorTemperature, "70000"),
+            (CommandPath::Brightness, "inf"),
+            (CommandPath::Brightness, "NaN"),
+            (CommandPath::Hue, "[1]"),
+            (CommandPath::Saturation, "null"),
             (CommandPath::ColorTemperature, "true"),
         ] {
-            assert!(parse(path, bad).is_err(), "{path:?} {bad}");
+            assert!(
+                parse_command(path, bad.as_bytes()).is_err(),
+                "{path:?} {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn numbers_outside_the_fixed_range_are_clamped() {
+        let brightness = |value, transition| Command::Brightness { value, transition };
+        for (path, payload, expected) in [
+            (CommandPath::Brightness, "101", brightness(100, None)),
+            (CommandPath::Brightness, "-5", brightness(0, None)),
+            (
+                CommandPath::Brightness,
+                r#"{"val":50,"transition":-1}"#,
+                brightness(50, Some(0)),
+            ),
+            (
+                CommandPath::Brightness,
+                r#"{"val":50,"transition":70000}"#,
+                brightness(50, Some(u16::MAX)),
+            ),
+            (CommandPath::Hue, "400", Command::Hue(360)),
+            (CommandPath::Hue, "-1", Command::Hue(0)),
+            (CommandPath::Saturation, "101", Command::Saturation(100)),
+            (
+                CommandPath::ColorTemperature,
+                "99999",
+                Command::ColorTemperature(u16::MAX),
+            ),
+            (
+                CommandPath::ColorTemperature,
+                "-5",
+                Command::ColorTemperature(0),
+            ),
+        ] {
+            assert_eq!(
+                parse_clamped(path, payload),
+                Ok((expected, true)),
+                "{path:?} {payload}"
+            );
         }
     }
 
@@ -431,32 +553,47 @@ mod tests {
             assert_eq!(parse(CommandPath::Identify, payload), Ok(Command::Identify));
         }
         assert_eq!(
-            parse_command(CommandPath::Identify, &[0xff]),
+            parse_command(CommandPath::Identify, &[0xff]).map(|p| p.commands),
             Ok(vec![Command::Identify])
         );
     }
 
     #[test]
     fn hs_is_hue_then_saturation() {
-        let both = |h, s| Ok(vec![Command::Hue(h), Command::Saturation(s)]);
+        let both = |h, s, clamped| {
+            Ok(ParsedCommand {
+                commands: vec![Command::Hue(h), Command::Saturation(s)],
+                clamped,
+            })
+        };
         for payload in [
             "120,80",
             " 120 , 80 ",
             "\"120,80\"",
             "[120,80]",
             "[120.0,80]",
+            "[119.6,80]",
             r#"{"val":[120,80]}"#,
             r#"{"val":"120,80"}"#,
         ] {
             assert_eq!(
                 parse_command(CommandPath::HueSaturation, payload.as_bytes()),
-                both(120, 80),
+                both(120, 80, false),
                 "{payload}"
             );
         }
         assert_eq!(
             parse_command(CommandPath::HueSaturation, b"360,0"),
-            both(360, 0)
+            both(360, 0, false)
+        );
+        // Each component is clamped on its own.
+        assert_eq!(
+            parse_command(CommandPath::HueSaturation, b"400,150"),
+            both(360, 100, true)
+        );
+        assert_eq!(
+            parse_command(CommandPath::HueSaturation, b"-1,80"),
+            both(0, 80, true)
         );
         for bad in [
             "",
@@ -464,12 +601,9 @@ mod tests {
             "120,",
             ",80",
             "120,80,1",
-            "361,80",
-            "120,101",
-            "-1,80",
-            "120.5,80",
             "[120]",
             "[120,80,1]",
+            "red,80",
             r#"{"val":120}"#,
             r#"{"h":120,"s":80}"#,
             "red",

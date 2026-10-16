@@ -7,8 +7,8 @@ use crate::model::{ConfigError, DeviceId, validate_prefix};
 /// The paths below `<prefix>/status/<id>/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StatusPath {
-    /// `reachable`
-    Reachable,
+    /// `online`: whether the device is reachable
+    Online,
     /// `on`
     On,
     /// `brightness`
@@ -38,7 +38,7 @@ pub enum StatusPath {
 impl StatusPath {
     /// Every status path of the contract.
     pub const ALL: [Self; 13] = [
-        Self::Reachable,
+        Self::Online,
         Self::On,
         Self::Brightness,
         Self::Hue,
@@ -56,7 +56,7 @@ impl StatusPath {
     /// The topic level.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Reachable => "reachable",
+            Self::Online => "online",
             Self::On => "on",
             Self::Brightness => "brightness",
             Self::Hue => "hue",
@@ -161,7 +161,8 @@ impl HaEntity {
         }
     }
 
-    /// The entity's part of ids and topics, unique within the device.
+    /// The entity's part of ids and topics, unique within the device: the component id in the
+    /// device-based discovery message and the end of the unique id.
     pub fn key(self) -> &'static str {
         match self {
             Self::Light => "light",
@@ -171,10 +172,16 @@ impl HaEntity {
     }
 }
 
-/// `<discovery prefix>/<component>/<node>/<entity>/config`: where Home Assistant expects the
-/// discovery message of one entity. The node is `nanoleaf2mqtt_<id>`; device ids only use
+/// `<discovery prefix>/device/<node>/config`: where Home Assistant expects the device-based
+/// discovery message of one device. The node is `nanoleaf2mqtt_<id>`; device ids only use
 /// characters Home Assistant accepts there (`a-z0-9-`).
-pub fn ha_discovery(discovery_prefix: &str, device: &DeviceId, entity: HaEntity) -> String {
+pub fn ha_discovery(discovery_prefix: &str, device: &DeviceId) -> String {
+    format!("{discovery_prefix}/device/{}/config", ha_node(device))
+}
+
+/// `<discovery prefix>/<component>/<node>/<entity>/config`: where version 1 of the contract
+/// announced each entity on its own. Only used to migrate and clear those messages.
+pub fn ha_legacy_discovery(discovery_prefix: &str, device: &DeviceId, entity: HaEntity) -> String {
     format!(
         "{discovery_prefix}/{}/{}/{}/config",
         entity.component(),
@@ -183,10 +190,68 @@ pub fn ha_discovery(discovery_prefix: &str, device: &DeviceId, entity: HaEntity)
     )
 }
 
+/// The subscriptions that read back every discovery message this service may have left under
+/// `discovery_prefix`: the device-based ones and those of contract version 1. They match other
+/// services' messages as well; [`parse_ha_discovery`] tells them apart.
+pub fn ha_readback_filters(discovery_prefix: &str) -> Vec<String> {
+    let mut filters = vec![format!("{discovery_prefix}/device/+/config")];
+    filters.extend(HaEntity::ALL.into_iter().map(|entity| {
+        format!(
+            "{discovery_prefix}/{}/+/{}/config",
+            entity.component(),
+            entity.key()
+        )
+    }));
+    filters
+}
+
+/// A discovery topic of this service, split up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HaDiscoveryTopic {
+    /// `<ha>/device/nanoleaf2mqtt_<id>/config`
+    Device(DeviceId),
+    /// `<ha>/<component>/nanoleaf2mqtt_<id>/<entity>/config` (contract version 1)
+    Legacy(DeviceId, HaEntity),
+}
+
+/// Splits a discovery topic of this service under `discovery_prefix`; `None` for any other
+/// topic, including other services' discovery messages.
+pub fn parse_ha_discovery(discovery_prefix: &str, topic: &str) -> Option<HaDiscoveryTopic> {
+    let rest = topic
+        .strip_prefix(discovery_prefix)?
+        .strip_prefix('/')?
+        .strip_suffix("/config")?;
+    let levels: Vec<&str> = rest.split('/').collect();
+    let device = |node: &str| {
+        node.strip_prefix(SERVICE_NAME)?
+            .strip_prefix('_')
+            .and_then(|id| DeviceId::new(id).ok())
+    };
+    match levels.as_slice() {
+        ["device", node] => device(node).map(HaDiscoveryTopic::Device),
+        [component, node, key] => {
+            let entity = HaEntity::ALL
+                .into_iter()
+                .find(|e| e.component() == *component && e.key() == *key)?;
+            device(node).map(|id| HaDiscoveryTopic::Legacy(id, entity))
+        }
+        _ => None,
+    }
+}
+
 /// `nanoleaf2mqtt_<id>`: the device's id towards Home Assistant (discovery node, device
 /// identifier, start of every unique id).
 pub fn ha_node(device: &DeviceId) -> String {
     format!("{SERVICE_NAME}_{}", device.as_str())
+}
+
+/// A topic below `<prefix>/status/`, split up. Neither level is validated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusTopic {
+    /// The device id level as found.
+    pub device: String,
+    /// Everything below the device level (may contain `/`, may be empty).
+    pub path: String,
 }
 
 /// A topic below `<prefix>/set/`, split up. The device id is not validated against the
@@ -247,6 +312,21 @@ impl Topics {
         self.join(&["status", device.as_str(), ""])
     }
 
+    /// `<prefix>/status/#`, the subscription that reads back the retained status topics.
+    pub fn status_wildcard(&self) -> String {
+        self.join(&["status", "#"])
+    }
+
+    /// Splits `<prefix>/status/<id>/<path>`; `None` for a topic outside `<prefix>/status/`.
+    pub fn parse_status(&self, topic: &str) -> Option<StatusTopic> {
+        let rest = topic.strip_prefix(&self.join(&["status", ""]))?;
+        let (device, path) = rest.split_once('/').unwrap_or((rest, ""));
+        Some(StatusTopic {
+            device: device.to_owned(),
+            path: path.to_owned(),
+        })
+    }
+
     /// `<prefix>/set/<id>/<path>`
     pub fn set(&self, device: &DeviceId, path: CommandPath) -> String {
         self.join(&["set", device.as_str(), path.as_str()])
@@ -292,12 +372,17 @@ mod tests {
             t.status(&dev(), StatusPath::Saturation),
             "nanoleaf/status/kellertreppe/sat"
         );
+        assert_eq!(
+            t.status(&dev(), StatusPath::Online),
+            "nanoleaf/status/kellertreppe/online"
+        );
         assert_eq!(t.status_prefix(&dev()), "nanoleaf/status/kellertreppe/");
         assert_eq!(
             t.set(&dev(), CommandPath::ColorTemperature),
             "nanoleaf/set/kellertreppe/ct"
         );
         assert_eq!(t.set_wildcard(), "nanoleaf/set/#");
+        assert_eq!(t.status_wildcard(), "nanoleaf/status/#");
     }
 
     #[test]
@@ -334,15 +419,79 @@ mod tests {
     }
 
     #[test]
+    fn status_topics_are_split() {
+        let t = topics();
+        let split = |topic| t.parse_status(topic).map(|s| (s.device, s.path));
+        assert_eq!(
+            split("nanoleaf/status/dev/on"),
+            Some(("dev".to_owned(), "on".to_owned()))
+        );
+        assert_eq!(
+            split("nanoleaf/status/dev/a/b"),
+            Some(("dev".to_owned(), "a/b".to_owned()))
+        );
+        assert_eq!(
+            split("nanoleaf/status/dev"),
+            Some(("dev".to_owned(), String::new()))
+        );
+        assert_eq!(split("nanoleaf/set/dev/on"), None);
+        assert_eq!(split("nanoleafx/status/dev/on"), None);
+    }
+
+    #[test]
+    fn discovery_topics_are_built_and_recognised() {
+        let id = dev();
+        assert_eq!(
+            ha_discovery("homeassistant", &id),
+            "homeassistant/device/nanoleaf2mqtt_kellertreppe/config"
+        );
+        assert_eq!(
+            ha_legacy_discovery("ha/x", &id, HaEntity::Touch),
+            "ha/x/event/nanoleaf2mqtt_kellertreppe/touch/config"
+        );
+        assert_eq!(
+            parse_ha_discovery("ha/x", &ha_discovery("ha/x", &id)),
+            Some(HaDiscoveryTopic::Device(id.clone()))
+        );
+        for entity in HaEntity::ALL {
+            assert_eq!(
+                parse_ha_discovery("ha/x", &ha_legacy_discovery("ha/x", &id, entity)),
+                Some(HaDiscoveryTopic::Legacy(id.clone(), entity))
+            );
+        }
+        for other in [
+            "ha/x/device/zigbee2mqtt_lamp/config",
+            "ha/x/device/nanoleaf2mqtt_/config",
+            "ha/x/device/nanoleaf2mqtt_Bad/config",
+            "ha/x/light/nanoleaf2mqtt_kellertreppe/touch/config",
+            "ha/x/light/nanoleaf2mqtt_kellertreppe/config",
+            "ha/y/device/nanoleaf2mqtt_kellertreppe/config",
+            "ha/x/device/nanoleaf2mqtt_kellertreppe/state",
+        ] {
+            assert_eq!(parse_ha_discovery("ha/x", other), None, "{other}");
+        }
+        assert_eq!(
+            ha_readback_filters("ha"),
+            [
+                "ha/device/+/config",
+                "ha/light/+/light/config",
+                "ha/event/+/touch/config",
+                "ha/button/+/identify/config",
+            ]
+        );
+    }
+
+    #[test]
     fn paths_round_trip() {
         for path in CommandPath::ALL {
             assert_eq!(CommandPath::parse(path.as_str()), Some(path));
         }
-        assert_eq!(CommandPath::parse("reachable"), None);
+        assert_eq!(CommandPath::parse("online"), None);
         for path in StatusPath::ALL {
             assert_eq!(StatusPath::parse(path.as_str()), Some(path));
         }
         assert_eq!(StatusPath::parse("identify"), None);
+        assert_eq!(StatusPath::parse("reachable"), None, "gone in version 2");
         assert!(
             StatusPath::ALL
                 .iter()
@@ -362,6 +511,7 @@ mod tests {
             "/status/",
             "/set/",
             "/connected",
+            "/config",
         ];
         let mut files = Vec::new();
         let mut dirs = vec![src.join("mqtt"), src.join("bridge"), src.join("model")];

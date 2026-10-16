@@ -263,7 +263,8 @@ async fn a_post_from_another_origin_is_refused() {
         .header("referer", "https://evil.example/page")
         .header("cookie", ui.cookie.clone().unwrap())
         .header("content-type", "application/x-www-form-urlencoded")
-        .body(axum::body::Body::from("ha_discovery=true"))
+        // No checkbox: an attempt to switch discovery off.
+        .body(axum::body::Body::from(""))
         .unwrap();
     let response = tower::ServiceExt::oneshot(ui.router.clone(), request)
         .await
@@ -281,7 +282,7 @@ async fn a_post_from_another_origin_is_refused() {
     assert_eq!(answer.status, StatusCode::FORBIDDEN);
 
     let settings = ui.store.settings().await.unwrap();
-    assert!(settings.broker_url.is_none() && !settings.ha_discovery);
+    assert!(settings.broker_url.is_none() && settings.ha_discovery);
     assert!(ui.take_changes().is_empty());
 }
 

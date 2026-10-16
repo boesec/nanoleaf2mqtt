@@ -134,9 +134,9 @@ pub fn hs_from(hue: Option<&Value>, saturation: Option<&Value>) -> Option<(Statu
     Some(hs_value(hue, saturation))
 }
 
-/// The `val` of `reachable`.
-pub fn reachable_value(reachable: bool) -> (StatusPath, Value) {
-    (StatusPath::Reachable, json!(reachable))
+/// The `val` of `online`: whether the device is reachable.
+pub fn online_value(online: bool) -> (StatusPath, Value) {
+    (StatusPath::Online, json!(online))
 }
 
 /// The `val` of `effect`.

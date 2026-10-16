@@ -1,16 +1,25 @@
-//! Home Assistant MQTT discovery: the retained configuration messages that let Home Assistant
-//! find every device on its own.
+//! Home Assistant MQTT discovery: the retained configuration message that lets Home Assistant
+//! find every device on its own, in the device-based form (mqtt-smarthome 2.0, section 8).
 //!
-//! Each device becomes one Home Assistant device with three entities: the light, an `event`
-//! entity for touch gestures and a `button` for identify. The messages point directly at the
-//! contract's status and command topics and read `val` through value templates; there are no
-//! extra state topics. An entity is available while the service is up (`connected` is `1` or `2`)
-//! and its own device is reachable, so one unreachable device does not affect the others.
+//! Each device becomes one Home Assistant device, announced in one message with three
+//! components: the light, an `event` entity for touch gestures and a `button` for identify. The
+//! message points directly at the contract's status and command topics and reads `val` through
+//! value templates; there are no extra state topics. An entity is available while the service
+//! is up (`connected` is `2`) and its own device is online, so one unreachable device does not
+//! affect the others. The `online` entry is only named once the device's `online` topic has a
+//! value: Home Assistant shows an entity as unavailable until every availability topic it names
+//! has delivered one.
 //!
-//! Only what the device reported goes into the messages (model, firmware, colour temperature
+//! Only what the device reported goes into the message (model, firmware, colour temperature
 //! range, effect list); nothing about how the device or the broker is reached.
 //!
-//! Home Assistant documentation: <https://www.home-assistant.io/integrations/mqtt/>,
+//! Version 1 of the contract announced each entity on its own topic. Such a message is moved
+//! over with Home Assistant's migration request (`{"migrate_discovery": true}` on the old topic,
+//! then the device-based message, then the old topic cleared), which keeps the entities and
+//! their settings; the unique ids are the same in both versions.
+//!
+//! Home Assistant documentation: <https://www.home-assistant.io/integrations/mqtt/> (device
+//! discovery payload, migration from single component to device-based discovery),
 //! <https://www.home-assistant.io/integrations/light.mqtt/>,
 //! <https://www.home-assistant.io/integrations/event.mqtt/>,
 //! <https://www.home-assistant.io/integrations/button.mqtt/>.
@@ -22,10 +31,11 @@ use super::payload::SERVICE_NAME;
 use super::topic::{CommandPath, HaEntity, StatusPath, Topics, ha_discovery, ha_node};
 use crate::model::{DeviceId, DeviceSnapshot, Gesture, ValueRange};
 
-/// `connected` → availability: `1` and `2` (service up) count as available, `0` and anything else not.
-const CONNECTED_TEMPLATE: &str = "{{ 'online' if value in ['1', '2'] else 'offline' }}";
-/// `reachable` → availability; a cleared topic counts as not reachable.
-const REACHABLE_TEMPLATE: &str =
+/// `connected` → availability: `2` (and above) counts as available, `0`, a cleared topic and
+/// anything else not.
+const CONNECTED_TEMPLATE: &str = "{{ 'online' if value | int(0) >= 2 else 'offline' }}";
+/// `online` → availability; a cleared topic counts as offline.
+const ONLINE_TEMPLATE: &str =
     "{{ 'online' if value_json is defined and value_json.val == true else 'offline' }}";
 /// `val` of a status topic as it is.
 const VAL_TEMPLATE: &str = "{{ value_json.val }}";
@@ -50,7 +60,7 @@ const GESTURES: [Gesture; 6] = [
     Gesture::SwipeRight,
 ];
 
-/// What the discovery messages say about a device, as far as the device reported it.
+/// What the discovery message says about a device, as far as the device reported it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiscoveryDevice {
     /// Name the device reports for itself.
@@ -92,34 +102,72 @@ fn take<T: Clone>(slot: &mut Option<T>, reported: &Option<T>) {
     }
 }
 
-/// The discovery topic of every entity of a device.
+/// The discovery topics of a device: the one device-based message.
 pub fn topics(discovery_prefix: &str, device: &DeviceId) -> Vec<String> {
-    HaEntity::ALL
-        .into_iter()
-        .map(|entity| ha_discovery(discovery_prefix, device, entity))
-        .collect()
+    vec![ha_discovery(discovery_prefix, device)]
 }
 
-/// Every discovery message of a device: topic and payload.
-pub fn messages(
+/// The discovery message of a device: topic and payload. `online_known` says whether the
+/// device's `online` topic has a value, so that it can be named for availability.
+pub fn message(
     topics: &Topics,
     discovery_prefix: &str,
     device: &DeviceId,
     about: &DiscoveryDevice,
-) -> Vec<(String, Value)> {
-    HaEntity::ALL
+    online_known: bool,
+) -> (String, Value) {
+    (
+        ha_discovery(discovery_prefix, device),
+        config(topics, device, about, online_known),
+    )
+}
+
+/// The device-based discovery payload of a device.
+pub fn config(
+    topics: &Topics,
+    device: &DeviceId,
+    about: &DiscoveryDevice,
+    online_known: bool,
+) -> Value {
+    let mut availability = vec![availability_entry(topics.connected(), CONNECTED_TEMPLATE)];
+    if online_known {
+        availability.push(availability_entry(
+            topics.status(device, StatusPath::Online),
+            ONLINE_TEMPLATE,
+        ));
+    }
+    let components: Map<String, Value> = HaEntity::ALL
         .into_iter()
         .map(|entity| {
             (
-                ha_discovery(discovery_prefix, device, entity),
-                config(topics, device, about, entity),
+                entity.key().to_owned(),
+                component(topics, device, about, entity),
             )
         })
-        .collect()
+        .collect();
+    json!({
+        "device": device_block(device, about),
+        "origin": {"name": SERVICE_NAME, "sw_version": env!("CARGO_PKG_VERSION")},
+        "availability": availability,
+        "availability_mode": "all",
+        "qos": 0,
+        "components": components,
+    })
 }
 
-/// The discovery payload of one entity.
-pub fn config(
+/// One entry of the availability list: only the keys mqtt-smarthome 2.0 allows there (Home
+/// Assistant rejects the whole message over an unknown key in a list entry).
+fn availability_entry(topic: String, template: &str) -> Value {
+    json!({
+        "topic": topic,
+        "payload_available": "online",
+        "payload_not_available": "offline",
+        "value_template": template,
+    })
+}
+
+/// The configuration of one component of the device-based message.
+pub fn component(
     topics: &Topics,
     device: &DeviceId,
     about: &DiscoveryDevice,
@@ -130,34 +178,18 @@ pub fn config(
     let mut put = |key: &str, value: Value| {
         object.insert(key.to_owned(), value);
     };
+    put("p", json!(entity.component()));
     put("unique_id", json!(format!("{node}_{}", entity.key())));
     put(
         "default_entity_id",
         json!(default_entity_id(device, entity)),
     );
-    put("device", device_block(device, about));
-    put(
-        "origin",
-        json!({"name": SERVICE_NAME, "sw_version": env!("CARGO_PKG_VERSION")}),
-    );
-    put(
-        "availability",
-        json!([
-            {"topic": topics.connected(), "value_template": CONNECTED_TEMPLATE},
-            {
-                "topic": topics.status(device, StatusPath::Reachable),
-                "value_template": REACHABLE_TEMPLATE
-            },
-        ]),
-    );
-    put("availability_mode", json!("all"));
     let status = |path| json!(topics.status(device, path));
     let set = |path| json!(topics.set(device, path));
     match entity {
         HaEntity::Light => {
             // The light is the device itself: it takes the device's name.
             put("name", Value::Null);
-            put("qos", json!(1));
             put("state_topic", status(StatusPath::On));
             put("state_value_template", json!(ON_TEMPLATE));
             put("command_topic", set(CommandPath::On));
@@ -206,11 +238,45 @@ pub fn config(
             put("name", json!("Identify"));
             put("device_class", json!("identify"));
             put("entity_category", json!("config"));
-            put("qos", json!(1));
             put("command_topic", set(CommandPath::Identify));
         }
     }
     Value::Object(object)
+}
+
+/// Home Assistant's migration request, published on a version 1 topic before the device-based
+/// message takes over its entity.
+pub fn migrate_request() -> Value {
+    json!({"migrate_discovery": true})
+}
+
+/// Whether a retained payload is a migration request.
+pub fn is_migrate_request(payload: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(payload).is_ok_and(|v| {
+        v.get("migrate_discovery")
+            .or_else(|| v.get("migr_discvry"))
+            .is_some_and(|m| *m == Value::Bool(true))
+    })
+}
+
+/// Whether a retained discovery payload was published by the service instance whose
+/// `connected` topic is `connected`: its availability names that topic. Another instance on the
+/// same broker (another prefix) announces its devices under the same discovery prefix, and its
+/// messages are not this instance's to clear.
+pub fn published_by(payload: &[u8], connected: &str) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(payload) else {
+        return false;
+    };
+    let list = value.get("availability").or_else(|| value.get("avty"));
+    list.and_then(Value::as_array).is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            entry
+                .get("topic")
+                .or_else(|| entry.get("t"))
+                .and_then(Value::as_str)
+                == Some(connected)
+        })
+    })
 }
 
 /// `light.nanoleaf_<id>`, `event.nanoleaf_<id>_touch`, `button.nanoleaf_<id>_identify`; entity
@@ -292,15 +358,30 @@ mod tests {
     fn unknown_values_are_left_out() {
         let topics = Topics::new("nanoleaf").unwrap();
         let id = DeviceId::new("my-dev").unwrap();
-        let light = config(&topics, &id, &DiscoveryDevice::default(), HaEntity::Light);
+        let payload = config(&topics, &id, &DiscoveryDevice::default(), true);
+        let light = &payload["components"]["light"];
         for key in ["min_kelvin", "max_kelvin", "effect_list"] {
             assert!(light.get(key).is_none(), "{key}");
         }
         assert_eq!(
-            light["device"],
+            payload["device"],
             json!({"identifiers": ["nanoleaf2mqtt_my-dev"], "name": "my-dev"})
         );
         assert_eq!(light["default_entity_id"], "light.nanoleaf_my_dev");
+    }
+
+    #[test]
+    fn the_online_entry_waits_for_a_value() {
+        let topics = Topics::new("nanoleaf").unwrap();
+        let id = DeviceId::new("dev").unwrap();
+        let about = DiscoveryDevice::default();
+        let without = config(&topics, &id, &about, false);
+        assert_eq!(without["availability"].as_array().unwrap().len(), 1);
+        let with = config(&topics, &id, &about, true);
+        assert_eq!(
+            with["availability"][1]["topic"],
+            "nanoleaf/status/dev/online"
+        );
     }
 
     #[test]
@@ -309,12 +390,26 @@ mod tests {
         about.update(&snapshot());
         let topics = Topics::new("nanoleaf").unwrap();
         let id = DeviceId::new("dev").unwrap();
-        let all = messages(&topics, "homeassistant", &id, &about);
-        assert_eq!(all.len(), 3);
-        assert!(!format!("{all:?}").contains("S-1"));
-        assert_eq!(
-            all.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
-            super::topics("homeassistant", &id)
-        );
+        let (topic, payload) = message(&topics, "homeassistant", &id, &about, true);
+        assert!(!payload.to_string().contains("S-1"));
+        assert_eq!(vec![topic], super::topics("homeassistant", &id));
+    }
+
+    #[test]
+    fn ownership_and_migration_requests_are_recognised() {
+        let topics = Topics::new("nanoleaf").unwrap();
+        let id = DeviceId::new("dev").unwrap();
+        let ours = config(&topics, &id, &DiscoveryDevice::default(), true).to_string();
+        assert!(published_by(ours.as_bytes(), "nanoleaf/connected"));
+        assert!(!published_by(ours.as_bytes(), "other/connected"));
+        assert!(published_by(
+            br#"{"avty":[{"t":"nanoleaf/connected"}]}"#,
+            "nanoleaf/connected"
+        ));
+        assert!(!published_by(b"not json", "nanoleaf/connected"));
+        assert!(!published_by(b"{}", "nanoleaf/connected"));
+        assert!(is_migrate_request(migrate_request().to_string().as_bytes()));
+        assert!(is_migrate_request(br#"{"migr_discvry":true}"#));
+        assert!(!is_migrate_request(ours.as_bytes()));
     }
 }

@@ -7,7 +7,7 @@
 mod support;
 
 use nanoleaf2mqtt::model::{DeviceId, DeviceInfo, DeviceSnapshot};
-use nanoleaf2mqtt::mqtt::{HaEntity, Mqtt, ha_discovery};
+use nanoleaf2mqtt::mqtt::{Mqtt, ha_discovery};
 use support::Watcher;
 
 fn snapshot() -> DeviceSnapshot {
@@ -21,10 +21,7 @@ fn snapshot() -> DeviceSnapshot {
 }
 
 fn topics(prefix: &str, id: &DeviceId) -> Vec<String> {
-    HaEntity::ALL
-        .into_iter()
-        .map(|entity| ha_discovery(prefix, id, entity))
-        .collect()
+    vec![ha_discovery(prefix, id)]
 }
 
 /// Waits until every topic in `wanted` was seen, empty (`cleared`) or not.

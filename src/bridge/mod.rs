@@ -6,6 +6,9 @@
 //! broker or prefix moves the connection (`connected = 0` on the old one, full republish on the
 //! new one). Nothing of this waits for a device, so one device never holds up another.
 //!
+//! `connected` is `2` while the bridge is connected to the broker, whatever its devices do; the
+//! reachability of each device is its own `status/<id>/online` (mqtt-smarthome 2.0, 3.1).
+//!
 //! Every device gets its own tasks (event stream, event publishing, command execution).
 //! Commands arriving on MQTT are routed to the device's command queue without waiting.
 
@@ -138,22 +141,22 @@ impl Bridge {
             store,
             options,
         } = setup;
-        let (mqtt, set_rx, broker) = match broker {
-            Some(config) => match Mqtt::spawn(&config, options.mqtt.clone()) {
-                // The connection task runs on its own; the handle tracks its end.
-                Ok((mqtt, set_rx, _task)) => (mqtt, set_rx, Some(config)),
+        // The supervisor connects once it knows the devices and the discovery setting, so that
+        // the read-back after the connect keeps the topics of every configured device.
+        let broker = match broker {
+            Some(config) => match Topics::new(config.prefix.clone()) {
+                Ok(_) => Some(config),
                 Err(error) => {
                     tracing::error!(%error, "the configured broker cannot be used");
-                    let (mqtt, set_rx) = Mqtt::new(options.mqtt.clone());
-                    (mqtt, set_rx, None)
+                    None
                 }
             },
             None => {
                 tracing::info!("no broker configured yet");
-                let (mqtt, set_rx) = Mqtt::new(options.mqtt.clone());
-                (mqtt, set_rx, None)
+                None
             }
         };
+        let (mqtt, set_rx) = Mqtt::new(options.mqtt.clone());
         let (changes_tx, changes_rx) = mpsc::channel(CHANGE_QUEUE);
         let (stop_tx, stop_rx) = oneshot::channel();
         let followed = Arc::new(Mutex::new(BTreeSet::new()));
@@ -238,14 +241,14 @@ impl BridgeHandle {
                 let device_values = values.remove(&id).unwrap_or_default();
                 let reachable = device_values
                     .iter()
-                    .find(|(path, _)| *path == StatusPath::Reachable)
+                    .find(|(path, _)| *path == StatusPath::Online)
                     .and_then(|(_, val)| val.as_bool());
                 DeviceStatus {
                     id,
                     reachable,
                     values: device_values
                         .into_iter()
-                        .filter(|(path, _)| *path != StatusPath::Reachable)
+                        .filter(|(path, _)| *path != StatusPath::Online)
                         .map(|(path, val)| (path.as_str().to_owned(), val.to_string()))
                         .collect(),
                 }

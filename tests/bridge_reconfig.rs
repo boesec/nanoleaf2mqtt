@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use support::{BlackHole, FakeDevice, Watcher};
 
 const RETAINED: [&str; 11] = [
-    "reachable",
+    "online",
     "on",
     "brightness",
     "hue",
@@ -136,14 +136,12 @@ async fn devices_come_and_go_at_runtime_without_interrupting_the_other() {
     // Added: followed at once.
     handle.apply(run("added", first.address)).await.unwrap();
     let seen = watcher
-        .until_val("r1/status/added/reachable", json!(true))
+        .until_val("r1/status/added/online", json!(true))
         .await;
     assert!(
-        seen.iter()
-            .any(|m| m.topic == "r1/connected" && m.text() == "1"),
-        "connected is 1 while the new device has not reported: {seen:?}"
+        seen.iter().all(|m| m.topic != "r1/connected"),
+        "connected stays 2 while the new device has not reported: {seen:?}"
     );
-    watcher.until_text("r1/connected", "2").await;
     kept_device_is_live(port, "r1", &keep, &mut watcher, 31).await;
     let status = handle.status();
     assert_eq!(
@@ -191,11 +189,11 @@ async fn devices_come_and_go_at_runtime_without_interrupting_the_other() {
     // Enabled again, then removed for good.
     handle.apply(run("added", second.address)).await.unwrap();
     watcher
-        .until_val("r1/status/added/reachable", json!(true))
+        .until_val("r1/status/added/online", json!(true))
         .await;
     handle.apply(stop("added")).await.unwrap();
     until_cleared(&mut watcher, "r1", "added").await;
-    // Only the kept device is left, and it is reachable.
+    // The bridge is still up.
     let mut late = Watcher::start(port, "r1/connected").await;
     late.until_text("r1/connected", "2").await;
     late.stop().await;
@@ -225,7 +223,7 @@ async fn a_hanging_device_is_stopped_without_waiting_for_it() {
     )
     .unwrap();
     watcher
-        .until_val("r2/status/keep/reachable", json!(true))
+        .until_val("r2/status/keep/online", json!(true))
         .await;
     bridge.mqtt().ready().wait_for(|r| *r).await.unwrap();
     let handle = bridge.handle();
@@ -234,9 +232,8 @@ async fn a_hanging_device_is_stopped_without_waiting_for_it() {
     handle.apply(stop("hang")).await.unwrap();
     handle.apply(run("late", late.address)).await.unwrap();
     watcher
-        .until_val("r2/status/late/reachable", json!(true))
+        .until_val("r2/status/late/online", json!(true))
         .await;
-    watcher.until_text("r2/connected", "2").await;
     kept_device_is_live(port, "r2", &keep, &mut watcher, 40).await;
     bridge.shutdown().await;
 }

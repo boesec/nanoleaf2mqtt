@@ -1,0 +1,92 @@
+{
+  "availability": [
+    {
+      "payload_available": "online",
+      "payload_not_available": "offline",
+      "topic": "nanoleaf/connected",
+      "value_template": "{{ 'online' if value | int(0) >= 2 else 'offline' }}"
+    },
+    {
+      "payload_available": "online",
+      "payload_not_available": "offline",
+      "topic": "nanoleaf/status/living-room/online",
+      "value_template": "{{ 'online' if value_json is defined and value_json.val == true else 'offline' }}"
+    }
+  ],
+  "availability_mode": "all",
+  "components": {
+    "identify": {
+      "command_topic": "nanoleaf/set/living-room/identify",
+      "default_entity_id": "button.nanoleaf_living_room_identify",
+      "device_class": "identify",
+      "entity_category": "config",
+      "name": "Identify",
+      "p": "button",
+      "unique_id": "nanoleaf2mqtt_living-room_identify"
+    },
+    "light": {
+      "brightness_command_topic": "nanoleaf/set/living-room/brightness",
+      "brightness_scale": 100,
+      "brightness_state_topic": "nanoleaf/status/living-room/brightness",
+      "brightness_value_template": "{{ value_json.val }}",
+      "color_temp_command_topic": "nanoleaf/set/living-room/ct",
+      "color_temp_kelvin": true,
+      "color_temp_state_topic": "nanoleaf/status/living-room/ct",
+      "color_temp_value_template": "{{ value_json.val }}",
+      "command_topic": "nanoleaf/set/living-room/on",
+      "default_entity_id": "light.nanoleaf_living_room",
+      "effect_command_topic": "nanoleaf/set/living-room/effect",
+      "effect_list": [
+        "Blaze",
+        "Northern Lights",
+        "Prism"
+      ],
+      "effect_state_topic": "nanoleaf/status/living-room/effect",
+      "effect_value_template": "{{ value_json.val }}",
+      "hs_command_template": "{{ hue | round | int }},{{ sat | round | int }}",
+      "hs_command_topic": "nanoleaf/set/living-room/hs",
+      "hs_state_topic": "nanoleaf/status/living-room/hs",
+      "hs_value_template": "{{ value_json.val | join(',') }}",
+      "max_kelvin": 6500,
+      "min_kelvin": 1200,
+      "name": null,
+      "p": "light",
+      "payload_off": "false",
+      "payload_on": "true",
+      "state_topic": "nanoleaf/status/living-room/on",
+      "state_value_template": "{{ 'true' if value_json.val else 'false' }}",
+      "unique_id": "nanoleaf2mqtt_living-room_light"
+    },
+    "touch": {
+      "default_entity_id": "event.nanoleaf_living_room_touch",
+      "device_class": "button",
+      "event_types": [
+        "tap",
+        "double_tap",
+        "swipe_up",
+        "swipe_down",
+        "swipe_left",
+        "swipe_right"
+      ],
+      "name": "Touch",
+      "p": "event",
+      "state_topic": "nanoleaf/status/living-room/touch",
+      "unique_id": "nanoleaf2mqtt_living-room_touch",
+      "value_template": "{{ dict(value_json.val, event_type=value_json.val.gesture) | to_json }}"
+    }
+  },
+  "device": {
+    "identifiers": [
+      "nanoleaf2mqtt_living-room"
+    ],
+    "manufacturer": "Nanoleaf",
+    "model": "NL42",
+    "name": "Test Shapes",
+    "sw_version": "12.0.3"
+  },
+  "origin": {
+    "name": "nanoleaf2mqtt",
+    "sw_version": "<version>"
+  },
+  "qos": 0
+}

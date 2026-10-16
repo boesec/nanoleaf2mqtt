@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use support::{FakeDevice, Msg, Watcher};
 
 const STATUS: [&str; 11] = [
-    "reachable",
+    "online",
     "on",
     "brightness",
     "hue",
@@ -74,7 +74,13 @@ async fn initial_state_is_published_retained_with_val_ts_lc() {
     assert_eq!(by_topic["s1/connected"].text(), "2");
     let info = by_topic["s1/info"].json();
     assert_eq!(info["name"], "nanoleaf2mqtt");
-    assert_eq!(info["contract_version"], 1);
+    assert_eq!(info["contract_version"], 2);
+    assert_eq!(info["spec"], "2.0");
+    assert_eq!(info["maintenance"], false);
+    assert!(
+        info["pid"].as_u64().is_some() && info["started"].is_string(),
+        "{info}"
+    );
 
     let mut expected = vec!["s1/connected".to_owned(), "s1/info".to_owned()];
     expected.extend(STATUS.iter().map(|p| topic("s1", p)));
@@ -92,7 +98,7 @@ async fn initial_state_is_published_retained_with_val_ts_lc() {
         assert!(lc <= ts && lc > 1_700_000_000_000, "{path}: {payload}");
     }
     let val = |path: &str| by_topic[&topic("s1", path)].val();
-    assert_eq!(val("reachable"), json!(true));
+    assert_eq!(val("online"), json!(true));
     assert_eq!(val("on"), json!(true));
     assert_eq!(val("brightness"), json!(30));
     assert_eq!(val("hue"), json!(120));
@@ -179,30 +185,28 @@ async fn lost_device_is_unreachable_and_comes_back_with_a_full_republish() {
     watcher.barrier("s3/zz-barrier").await;
 
     device.set_down(true);
-    let seen = watcher.until_text("s3/connected", "1").await;
-    let lost = last_per_topic(&seen);
-    assert_eq!(lost[&topic("s3", "reachable")].val(), json!(false));
-    // The last values stay: nothing but reachability and `connected` is published.
+    let seen = watcher
+        .until_val(&topic("s3", "online"), json!(false))
+        .await;
+    // The last values stay: nothing but `online` is published, and `connected` stays `2`: the
+    // bridge itself is up.
     let topics: Vec<&str> = seen.iter().map(|m| m.topic.as_str()).collect();
-    assert_eq!(topics, [topic("s3", "reachable").as_str(), "s3/connected"]);
+    assert_eq!(topics, [topic("s3", "online").as_str()]);
 
     // Changed while away: the re-read must show it.
     device.set_root(support::root(true, 77, "Prism"));
     device.set_down(false);
-    let seen = watcher.until_text("s3/connected", "2").await;
+    let seen = watcher.until_val(&topic("s3", "online"), json!(true)).await;
     let back = last_per_topic(&seen);
     for path in STATUS {
         assert!(back.contains_key(&topic("s3", path)), "{path} republished");
     }
-    assert_eq!(back[&topic("s3", "reachable")].val(), json!(true));
     assert_eq!(back[&topic("s3", "brightness")].val(), json!(77));
-    // `reachable` follows the values, `connected` comes last.
-    let order: Vec<&str> = seen.iter().map(|m| m.topic.as_str()).collect();
-    let reachable_at = order
-        .iter()
-        .rposition(|t| *t == topic("s3", "reachable"))
-        .unwrap();
-    assert_eq!(reachable_at, order.len() - 2, "{order:?}");
+    // `online` follows the values; `connected` did not move.
+    assert!(seen.iter().all(|m| m.topic != "s3/connected"), "{seen:?}");
+    let mut retained = Watcher::start(port, "s3/connected").await;
+    retained.until_text("s3/connected", "2").await;
+    retained.stop().await;
 
     // `lc` moves only for values that changed.
     let lc = |m: &Msg| m.json()["lc"].as_i64().unwrap();
@@ -260,13 +264,13 @@ async fn touch_is_published_but_not_retained() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn without_devices_connected_is_1() {
+async fn without_devices_connected_is_2() {
     let port = support::start_broker();
     let mut watcher = Watcher::start(port, "s5/#").await;
     let bridge = Bridge::start(&support::broker(port, "s5"), &[], support::options()).unwrap();
     let seen = watcher.until(|m| m.topic == "s5/info").await;
     assert_eq!(seen[0].topic, "s5/connected");
-    assert_eq!(seen[0].text(), "1");
+    assert_eq!(seen[0].text(), "2");
     bridge.shutdown().await;
     watcher.until_text("s5/connected", "0").await;
 }
