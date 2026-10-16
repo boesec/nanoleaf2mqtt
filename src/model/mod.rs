@@ -15,7 +15,7 @@ pub use config::{
     BrokerConfig, ConfigError, DEFAULT_DEVICE_PORT, DEFAULT_HA_DISCOVERY_PREFIX, DEFAULT_MQTT_PORT,
     DEFAULT_PREFIX, DeviceConfig, DeviceId, parse_broker_url, process_client_id, validate_prefix,
 };
-pub use device::{DeviceInfo, DeviceSnapshot};
+pub use device::{DeviceInfo, DeviceSnapshot, Layout, PanelPosition};
 pub use event::{DeviceEvent, Gesture, StateChange};
 pub use runtime::{BridgeStatus, ConfigChange, DeviceStatus, PairError};
 pub use state::{ColorMode, LightState, Ranges, ValueRange};

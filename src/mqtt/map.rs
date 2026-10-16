@@ -5,7 +5,7 @@
 use serde_json::{Map, Value, json};
 
 use super::topic::StatusPath;
-use crate::model::{ColorMode, DeviceInfo, DeviceSnapshot, Gesture, StateChange};
+use crate::model::{ColorMode, DeviceInfo, DeviceSnapshot, Gesture, Layout, StateChange};
 
 /// The `val` of every status topic a snapshot reports a value for.
 pub fn snapshot_values(snapshot: &DeviceSnapshot) -> Vec<(StatusPath, Value)> {
@@ -41,7 +41,73 @@ pub fn snapshot_values(snapshot: &DeviceSnapshot) -> Vec<(StatusPath, Value)> {
     if let Some(device) = device_value(&snapshot.info) {
         values.push((StatusPath::Device, device));
     }
+    if let Some(layout) = &snapshot.info.layout {
+        values.push((StatusPath::Layout, layout_value(layout)));
+    }
     values
+}
+
+/// Contract name of a panel shape type: the name in the shape-type table of the Nanoleaf
+/// OpenAPI documentation (developer portal), spelled as `snake_case`. The numbers up to 20 were
+/// cross-checked against the table in the `aionanoleaf` library
+/// (<https://github.com/milanmeu/aionanoleaf>, `layout.py`). `unknown` for any other number.
+pub fn shape_name(shape_type: u32) -> &'static str {
+    match shape_type {
+        0 => "triangle",
+        1 => "rhythm",
+        2 => "square",
+        3 => "control_square_primary",
+        4 => "control_square_passive",
+        5 => "power_supply",
+        7 => "hexagon_shapes",
+        8 => "triangle_shapes",
+        9 => "mini_triangle_shapes",
+        12 => "controller",
+        14 => "elements_hexagon",
+        15 => "elements_hexagon_corner",
+        16 => "lines_connector",
+        17 => "light_lines",
+        18 => "light_lines_single_zone",
+        19 => "controller_cap",
+        20 => "power_connector",
+        _ => "unknown",
+    }
+}
+
+/// `{orientation, side_length, panels: [{id, x, y, rotation, shape, shape_type}]}` with the
+/// fields the device reported.
+fn layout_value(layout: &Layout) -> Value {
+    let mut object = Map::new();
+    if let Some(orientation) = layout.orientation {
+        object.insert("orientation".to_owned(), json!(orientation));
+    }
+    if let Some(side_length) = layout.side_length {
+        object.insert("side_length".to_owned(), json!(side_length));
+    }
+    let panels: Vec<Value> = layout
+        .panels
+        .iter()
+        .map(|panel| {
+            let mut p = Map::new();
+            p.insert("id".to_owned(), json!(panel.id));
+            if let Some(x) = panel.x {
+                p.insert("x".to_owned(), json!(x));
+            }
+            if let Some(y) = panel.y {
+                p.insert("y".to_owned(), json!(y));
+            }
+            if let Some(rotation) = panel.rotation {
+                p.insert("rotation".to_owned(), json!(rotation));
+            }
+            if let Some(shape_type) = panel.shape_type {
+                p.insert("shape".to_owned(), json!(shape_name(shape_type)));
+                p.insert("shape_type".to_owned(), json!(shape_type));
+            }
+            Value::Object(p)
+        })
+        .collect();
+    object.insert("panels".to_owned(), Value::Array(panels));
+    Value::Object(object)
 }
 
 /// The `val` of the topic one state change updates.
@@ -237,6 +303,66 @@ mod tests {
         assert_eq!(
             change_value(&StateChange::On(false)),
             (StatusPath::On, json!(false))
+        );
+    }
+
+    #[test]
+    fn layout_maps_shapes_and_keeps_the_numbers() {
+        use crate::model::PanelPosition;
+        let snapshot = DeviceSnapshot {
+            info: DeviceInfo {
+                layout: Some(Layout {
+                    orientation: Some(120),
+                    side_length: None,
+                    panels: vec![
+                        PanelPosition {
+                            id: 1001,
+                            x: Some(201),
+                            y: Some(77),
+                            rotation: Some(0),
+                            shape_type: Some(8),
+                        },
+                        PanelPosition {
+                            id: 7,
+                            shape_type: Some(4242),
+                            ..PanelPosition::default()
+                        },
+                        PanelPosition {
+                            id: 8,
+                            ..PanelPosition::default()
+                        },
+                    ],
+                }),
+                ..DeviceInfo::default()
+            },
+            ..DeviceSnapshot::default()
+        };
+        assert_eq!(
+            snapshot_values(&snapshot),
+            vec![(
+                StatusPath::Layout,
+                json!({
+                    "orientation": 120,
+                    "panels": [
+                        {"id": 1001, "x": 201, "y": 77, "rotation": 0,
+                         "shape": "triangle_shapes", "shape_type": 8},
+                        {"id": 7, "shape": "unknown", "shape_type": 4242},
+                        {"id": 8}
+                    ]
+                })
+            )]
+        );
+    }
+
+    #[test]
+    fn shape_names_are_snake_case() {
+        assert_eq!(shape_name(12), "controller");
+        assert_eq!(shape_name(7), "hexagon_shapes");
+        assert_eq!(shape_name(6), "unknown");
+        assert!(
+            (0..64)
+                .map(shape_name)
+                .all(|n| n.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
         );
     }
 

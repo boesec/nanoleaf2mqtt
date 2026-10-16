@@ -29,13 +29,15 @@ pub enum StatusPath {
     Effects,
     /// `device`
     Device,
+    /// `layout`: the panels' geometry
+    Layout,
     /// `touch` (not retained)
     Touch,
 }
 
 impl StatusPath {
     /// Every status path of the contract.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Reachable,
         Self::On,
         Self::Brightness,
@@ -47,6 +49,7 @@ impl StatusPath {
         Self::Effect,
         Self::Effects,
         Self::Device,
+        Self::Layout,
         Self::Touch,
     ];
 
@@ -64,6 +67,7 @@ impl StatusPath {
             Self::Effect => "effect",
             Self::Effects => "effects",
             Self::Device => "device",
+            Self::Layout => "layout",
             Self::Touch => "touch",
         }
     }

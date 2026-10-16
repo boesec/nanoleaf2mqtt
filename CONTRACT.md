@@ -41,13 +41,26 @@ changing a payload is a breaking change and raises the contract version (publish
 | `effect` | string, name of the selected effect, as reported (incl. pseudo values like `*Shuffle*`) | `"Northern Lights"` |
 | `effects` | array of strings, the device's effect list | `["Beatdrop", …]` |
 | `device` | object: `model`, `firmware`, `name`, `panels` | `{"model":"NL42","firmware":"12.0.3","name":"…","panels":15}` |
+| `layout` | object: `orientation` (°), `side_length`, `panels`: array of `{id, x, y, rotation, shape, shape_type}`; not published at all when the device reports no position data | `{"orientation":120,"side_length":134,"panels":[{"id":1001,"x":201,"y":77,"rotation":0,"shape":"triangle_shapes","shape_type":8}]}` |
 | `touch` | **not retained, QoS 0**, object `{"panel": <id>, "gesture": "<g>"}`; no `lc` | `{"panel":1234,"gesture":"swipe_up"}` |
 
 Gestures: `tap`, `double_tap`, `swipe_up`, `swipe_down`, `swipe_left`, `swipe_right`,
 `unknown_<n>` for anything else.
 
 A complete `touch` message: `{"val":{"panel":1234,"gesture":"swipe_up"},"ts":1760529600000}`.
-Within `device` and `touch`, a field the device does not report is left out (swipes are not tied
+`layout` details: `orientation` is the global orientation in degrees, `side_length` the side length
+of one panel, per panel `id` is the panel id (the same as `panel` in `touch`; the controller unit
+is part of the list, as the device reports it), `x`/`y` the position, `rotation` the panel's
+rotation in degrees and `shape_type` the device's shape number. `shape` is its name, from the
+shape-type table of the Nanoleaf OpenAPI documentation: `triangle` (0), `rhythm` (1), `square`
+(2), `control_square_primary` (3), `control_square_passive` (4), `power_supply` (5),
+`hexagon_shapes` (7), `triangle_shapes` (8), `mini_triangle_shapes` (9), `controller` (12),
+`elements_hexagon` (14), `elements_hexagon_corner` (15), `lines_connector` (16), `light_lines`
+(17), `light_lines_single_zone` (18), `controller_cap` (19), `power_connector` (20), and
+`unknown` for any other number (`shape_type` is always kept). Not exposed through Home Assistant
+discovery.
+
+Within `device`, `layout` (also per panel) and `touch`, a field the device does not report is left out (swipes are not tied
 to one panel and carry no `panel`).
 
 ## Commands (`<prefix>/set/<id>/…`)

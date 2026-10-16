@@ -5,7 +5,9 @@
 
 use serde_json::Value;
 
-use crate::model::{ColorMode, DeviceInfo, DeviceSnapshot, LightState, Ranges, ValueRange};
+use crate::model::{
+    ColorMode, DeviceInfo, DeviceSnapshot, Layout, LightState, PanelPosition, Ranges, ValueRange,
+};
 
 /// Parses the answer of `GET /` (all panel info).
 pub fn parse_root(body: &[u8]) -> Result<DeviceSnapshot, serde_json::Error> {
@@ -27,6 +29,7 @@ pub fn parse_root(body: &[u8]) -> Result<DeviceSnapshot, serde_json::Error> {
             panel_count: root["panelLayout"]["layout"]["numPanels"]
                 .as_u64()
                 .and_then(|n| u32::try_from(n).ok()),
+            layout: layout(&root["panelLayout"]),
         },
         state: LightState {
             on: state["on"]["value"].as_bool(),
@@ -45,6 +48,36 @@ pub fn parse_root(body: &[u8]) -> Result<DeviceSnapshot, serde_json::Error> {
         },
         effects: string_list(&effects["effectsList"]),
     })
+}
+
+/// The panel geometry; `None` unless the device reported a list of position data. A panel
+/// without an id is skipped, any other missing field stays `None`.
+fn layout(panel_layout: &Value) -> Option<Layout> {
+    let positions = panel_layout["layout"]["positionData"].as_array()?;
+    let panels = positions
+        .iter()
+        .filter_map(|p| {
+            Some(PanelPosition {
+                id: p["panelId"].as_u64().and_then(|n| u32::try_from(n).ok())?,
+                x: integer(&p["x"]),
+                y: integer(&p["y"]),
+                rotation: number(&p["o"]),
+                shape_type: p["shapeType"].as_u64().and_then(|n| u32::try_from(n).ok()),
+            })
+        })
+        .collect();
+    Some(Layout {
+        orientation: number(&panel_layout["globalOrientation"]["value"]),
+        side_length: panel_layout["layout"]["sideLength"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok()),
+        panels,
+    })
+}
+
+/// A signed integer that fits `i32`.
+fn integer(value: &Value) -> Option<i32> {
+    value.as_i64().and_then(|n| i32::try_from(n).ok())
 }
 
 /// Parses the answer of `GET /effects/effectsList`. Entries that are not strings are skipped; a
@@ -121,6 +154,7 @@ mod tests {
                 firmware: Some("12.0.3".to_owned()),
                 hardware: Some("1.2-0".to_owned()),
                 panel_count: Some(15),
+                layout: snapshot.info.layout.clone(),
             }
         );
         assert_eq!(
@@ -150,6 +184,60 @@ mod tests {
     }
 
     #[test]
+    fn root_fixture_layout_is_parsed() {
+        let layout = parse_root(ROOT).unwrap().info.layout.unwrap();
+        assert_eq!(layout.orientation, Some(120));
+        assert_eq!(layout.side_length, Some(134));
+        assert_eq!(layout.panels.len(), 15);
+        assert_eq!(
+            layout.panels[0],
+            PanelPosition {
+                id: 1001,
+                x: Some(201),
+                y: Some(77),
+                rotation: Some(0),
+                shape_type: Some(8),
+            }
+        );
+        let controller = layout.panels.last().unwrap();
+        assert_eq!(controller.id, 0);
+        assert_eq!(controller.rotation, Some(300));
+        assert_eq!(controller.shape_type, Some(12));
+    }
+
+    #[test]
+    fn layout_is_absent_without_position_data() {
+        assert_eq!(parse_root(ROOT_MINIMAL).unwrap().info.layout, None);
+    }
+
+    #[test]
+    fn layout_fields_are_tolerant() {
+        let body = br#"{"panelLayout":{"layout":{"positionData":[
+            {"panelId":5,"x":"left","y":-3,"shapeType":99},
+            {"x":1,"y":2},
+            {"panelId":6}]}}}"#;
+        let layout = parse_root(body).unwrap().info.layout.unwrap();
+        assert_eq!(layout.orientation, None);
+        assert_eq!(layout.side_length, None);
+        assert_eq!(
+            layout.panels,
+            vec![
+                PanelPosition {
+                    id: 5,
+                    x: None,
+                    y: Some(-3),
+                    rotation: None,
+                    shape_type: Some(99),
+                },
+                PanelPosition {
+                    id: 6,
+                    ..PanelPosition::default()
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn opaque_and_unknown_keys_are_ignored() {
         // The fixture carries the opaque random-named key of the real device (renamed).
         let text = std::str::from_utf8(ROOT).unwrap();
@@ -176,6 +264,7 @@ mod tests {
                 firmware: Some("12.0.3".to_owned()),
                 hardware: None,
                 panel_count: None,
+                layout: None,
             }
         );
         let state = snapshot.state;

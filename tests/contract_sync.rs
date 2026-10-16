@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 
 use chrono::Utc;
 use nanoleaf2mqtt::model::{
-    ColorMode, DeviceId, DeviceInfo, DeviceSnapshot, Gesture, LightState, Ranges,
+    ColorMode, DeviceId, DeviceInfo, DeviceSnapshot, Gesture, Layout, LightState, PanelPosition,
+    Ranges,
 };
 use nanoleaf2mqtt::mqtt::{
     CONTRACT_VERSION, CommandPath, HaEntity, InfoPayload, StatusPath, Topics, ha_discovery, map,
@@ -119,6 +120,17 @@ fn a_complete_device_fills_every_status_path() {
             model: Some("NL42".to_owned()),
             firmware: Some("1.0".to_owned()),
             panel_count: Some(3),
+            layout: Some(Layout {
+                orientation: Some(120),
+                side_length: Some(134),
+                panels: vec![PanelPosition {
+                    id: 1001,
+                    x: Some(201),
+                    y: Some(77),
+                    rotation: Some(0),
+                    shape_type: Some(8),
+                }],
+            }),
             ..DeviceInfo::default()
         },
         state: LightState {
@@ -156,6 +168,35 @@ fn a_complete_device_fills_every_status_path() {
         example.as_object().unwrap().keys().collect::<BTreeSet<_>>(),
         device.as_object().unwrap().keys().collect::<BTreeSet<_>>()
     );
+}
+
+#[test]
+fn layout_example_and_shape_names_match_the_code() {
+    let row = rows("## Device status topics")
+        .into_iter()
+        .find(|r| r[0] == "`layout`")
+        .unwrap();
+    let example: Value = serde_json::from_str(row[2].trim_matches('`')).unwrap();
+    let panel = &example["panels"][0];
+    assert_eq!(panel["shape"], map::shape_name(8));
+    assert_eq!(panel["shape_type"], 8);
+
+    // Every shape name in the code is documented with its number, and the other way round.
+    let doc = contract();
+    let mut known = 0;
+    for number in 0..64_u32 {
+        let name = map::shape_name(number);
+        if name != "unknown" {
+            known += 1;
+            assert!(
+                doc.contains(&format!("`{name}` ({number})"))
+                    || doc.contains(&format!("`{name}`\n({number})")),
+                "{name} ({number}) is not documented"
+            );
+        }
+    }
+    assert_eq!(known, 17);
+    assert!(doc.contains("`unknown` for any other number"));
 }
 
 #[test]

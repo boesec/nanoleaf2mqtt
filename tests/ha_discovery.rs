@@ -22,6 +22,7 @@ fn sample() -> (DeviceId, DiscoveryDevice) {
             firmware: Some("12.0.3".to_owned()),
             hardware: Some("1.0".to_owned()),
             panel_count: Some(15),
+            layout: None,
         },
         state: LightState {
             ranges: Ranges {
