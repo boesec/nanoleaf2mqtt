@@ -4,5 +4,7 @@
   "docs": "Docs",
   "name": "Nanoleaf2mqtt",
   "description": "Issues of the repository Nanoleaf2mqtt; its issue files stay the truth.",
-  "board": "Nanoleaf2mqtt"
+  "board": "Nanoleaf2mqtt",
+  "lanes": ["Features", "Improvements", "Bugs"],
+  "bug_lane": "Bugs"
 }
