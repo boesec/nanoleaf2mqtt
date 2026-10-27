@@ -61,6 +61,7 @@ pub fn spawn(
 pub async fn run(client: Client, options: StreamOptions, events: mpsc::Sender<DeviceEvent>) {
     let mut backoff = Backoff::new(options.backoff_initial, options.backoff_max);
     let mut reachable: Option<bool> = None;
+    let mut lost_at: Option<Instant> = None;
     loop {
         let mut connected_at = None;
         let err = match session(
@@ -68,6 +69,7 @@ pub async fn run(client: Client, options: StreamOptions, events: mpsc::Sender<De
             &options,
             &events,
             &mut reachable,
+            &mut lost_at,
             &mut connected_at,
         )
         .await
@@ -88,6 +90,7 @@ pub async fn run(client: Client, options: StreamOptions, events: mpsc::Sender<De
                 "device unreachable"
             );
             reachable = Some(false);
+            lost_at = Some(Instant::now());
             if events.send(DeviceEvent::Unreachable).await.is_err() {
                 return;
             }
@@ -126,6 +129,7 @@ async fn session(
     options: &StreamOptions,
     events: &mpsc::Sender<DeviceEvent>,
     reachable: &mut Option<bool>,
+    lost_at: &mut Option<Instant>,
     connected_at: &mut Option<Instant>,
 ) -> Ended {
     // The stream is opened before the state is read, so that nothing happening in between is
@@ -140,7 +144,14 @@ async fn session(
     };
     *connected_at = Some(Instant::now());
     if *reachable != Some(true) {
-        tracing::info!(device = client.label(), "device reachable");
+        match lost_at.take() {
+            Some(since) => tracing::info!(
+                device = client.label(),
+                away = format_args!("{}s", since.elapsed().as_secs()),
+                "device reachable"
+            ),
+            None => tracing::info!(device = client.label(), "device reachable"),
+        }
         *reachable = Some(true);
         if events.send(DeviceEvent::Reachable).await.is_err() {
             return Ended::ReceiverGone;

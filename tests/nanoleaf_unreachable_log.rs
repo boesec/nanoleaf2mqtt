@@ -96,3 +96,89 @@ async fn losing_the_device_logs_one_warning_not_one_per_retry() {
     assert!(!log.contains("http://"), "URL in log: {log}");
     assert!(lines[0].contains("device="), "device label missing");
 }
+
+async fn mount_good_device(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/{TOKEN}/events")))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("", "text/event-stream"))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/{TOKEN}/")))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(ROOT, "application/json"))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovery_logs_how_long_the_device_was_away_but_the_first_connect_does_not() {
+    let capture = Capture::default();
+    let writer = capture.clone();
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_env_filter("info,wiremock=off")
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish(),
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/{TOKEN}/events")))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("", "text/event-stream"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/{TOKEN}/")))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(ROOT, "application/json"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::new(
+        &server.address().ip().to_string(),
+        server.address().port(),
+        Secret::new(TOKEN.to_owned()),
+    )
+    .unwrap()
+    .with_request_timeout(None);
+    let (tx, mut rx) = mpsc::channel(16);
+    let task = nanoleaf::spawn(client, StreamOptions::default(), tx);
+
+    assert_eq!(rx.recv().await, Some(DeviceEvent::Reachable));
+    assert!(matches!(rx.recv().await, Some(DeviceEvent::Snapshot(_))));
+    assert_eq!(rx.recv().await, Some(DeviceEvent::Unreachable));
+    // Down for a good while, then the device comes back.
+    tokio::time::sleep(Duration::from_secs(200)).await;
+    server.reset().await;
+    mount_good_device(&server).await;
+    assert_eq!(rx.recv().await, Some(DeviceEvent::Reachable));
+
+    drop(rx);
+    task.await.unwrap();
+
+    let log = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("device reachable"))
+        .collect();
+    assert!(lines.len() >= 2, "{log}");
+    assert!(lines[0].contains("INFO"), "{}", lines[0]);
+    assert!(!lines[0].contains("away"), "first connect: {}", lines[0]);
+    let away = lines[1]
+        .split("away=")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no away time: {}", lines[1]));
+    let seconds: u64 = away
+        .trim_start()
+        .split('s')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap_or_else(|_| panic!("away time unreadable: {}", lines[1]));
+    assert!((150..=300).contains(&seconds), "{}", lines[1]);
+    assert!(!log.contains(TOKEN), "token in log: {log}");
+    assert!(!log.contains("/api/v1"), "URL path in log: {log}");
+    assert!(!log.contains("http://"), "URL in log: {log}");
+}
