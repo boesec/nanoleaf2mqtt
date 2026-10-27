@@ -51,13 +51,14 @@ const TOUCH_TEMPLATE: &str =
 
 /// The gestures announced as event types: those the contract names (`unknown_<n>` is left out,
 /// it is not a fixed name).
-const GESTURES: [Gesture; 6] = [
+const GESTURES: [Gesture; 7] = [
     Gesture::SingleTap,
     Gesture::DoubleTap,
     Gesture::SwipeUp,
     Gesture::SwipeDown,
     Gesture::SwipeLeft,
     Gesture::SwipeRight,
+    Gesture::LongPress,
 ];
 
 /// What the discovery message says about a device, as far as the device reported it.

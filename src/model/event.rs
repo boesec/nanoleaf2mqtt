@@ -17,6 +17,8 @@ pub enum Gesture {
     SwipeLeft,
     /// Swipe right.
     SwipeRight,
+    /// Long press: a panel is held (id 6, undocumented by Nanoleaf).
+    LongPress,
     /// A gesture id this version does not know, as the device sent it.
     Unknown(u8),
 }

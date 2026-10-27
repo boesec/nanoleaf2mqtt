@@ -24,6 +24,7 @@ pub fn gesture(id: u8) -> Gesture {
         3 => Gesture::SwipeDown,
         4 => Gesture::SwipeLeft,
         5 => Gesture::SwipeRight,
+        6 => Gesture::LongPress,
         other => Gesture::Unknown(other),
     }
 }
@@ -137,7 +138,8 @@ mod tests {
         assert_eq!(gesture(3), Gesture::SwipeDown);
         assert_eq!(gesture(4), Gesture::SwipeLeft);
         assert_eq!(gesture(5), Gesture::SwipeRight);
-        assert_eq!(gesture(6), Gesture::Unknown(6));
+        assert_eq!(gesture(6), Gesture::LongPress);
+        assert_eq!(gesture(7), Gesture::Unknown(7));
         assert_eq!(gesture(255), Gesture::Unknown(255));
     }
 

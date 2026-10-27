@@ -163,6 +163,7 @@ pub fn gesture_name(gesture: Gesture) -> String {
         Gesture::SwipeDown => "swipe_down".to_owned(),
         Gesture::SwipeLeft => "swipe_left".to_owned(),
         Gesture::SwipeRight => "swipe_right".to_owned(),
+        Gesture::LongPress => "long_press".to_owned(),
         Gesture::Unknown(id) => format!("unknown_{id}"),
     }
 }
@@ -376,6 +377,10 @@ mod tests {
             touch_value(None, Gesture::SwipeLeft),
             json!({"gesture":"swipe_left"})
         );
+        assert_eq!(
+            touch_value(Some(1234), Gesture::LongPress),
+            json!({"panel":1234,"gesture":"long_press"})
+        );
         let names: Vec<String> = [
             Gesture::SingleTap,
             Gesture::DoubleTap,
@@ -383,6 +388,8 @@ mod tests {
             Gesture::SwipeDown,
             Gesture::SwipeLeft,
             Gesture::SwipeRight,
+            Gesture::LongPress,
+            Gesture::Unknown(7),
             Gesture::Unknown(9),
         ]
         .into_iter()
@@ -397,6 +404,8 @@ mod tests {
                 "swipe_down",
                 "swipe_left",
                 "swipe_right",
+                "long_press",
+                "unknown_7",
                 "unknown_9"
             ]
         );

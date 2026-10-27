@@ -226,6 +226,7 @@ fn gestures_match_the_documented_list() {
         Gesture::SwipeDown,
         Gesture::SwipeLeft,
         Gesture::SwipeRight,
+        Gesture::LongPress,
     ]
     .into_iter()
     .map(map::gesture_name)
@@ -239,7 +240,7 @@ fn gestures_match_the_documented_list() {
         .find(|r| r[0] == "`touch`")
         .unwrap();
     let example: Value = serde_json::from_str(row[2].trim_matches('`')).unwrap();
-    assert_eq!(example, map::touch_value(Some(1234), Gesture::SwipeUp));
+    assert_eq!(example, map::touch_value(Some(1234), Gesture::SingleTap));
 }
 
 #[test]

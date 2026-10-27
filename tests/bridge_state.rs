@@ -274,3 +274,40 @@ async fn without_devices_connected_is_2() {
     bridge.shutdown().await;
     watcher.until_text("s5/connected", "0").await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_panel_is_published_as_long_press_and_not_retained() {
+    let (port, device, bridge, mut watcher) = running("s14").await;
+    watcher.barrier("s14/zz-barrier").await;
+
+    device.push(4, json!({"events":[{"panelId":19508,"gesture":6}]}));
+    device.push(4, json!({"events":[{"panelId":19508,"gesture":7}]}));
+    let seen = watcher
+        .until(|m| m.topic == topic("s14", "touch") && m.val()["gesture"] == "unknown_7")
+        .await;
+    let touches: Vec<Value> = seen
+        .iter()
+        .filter(|m| m.topic == topic("s14", "touch"))
+        .map(Msg::json)
+        .collect();
+    assert_eq!(touches.len(), 2);
+    assert_eq!(
+        touches[0]["val"],
+        json!({"panel":19508,"gesture":"long_press"})
+    );
+    assert_eq!(
+        touches[1]["val"],
+        json!({"panel":19508,"gesture":"unknown_7"})
+    );
+    let first = touches[0].as_object().unwrap();
+    assert!(first.contains_key("ts") && !first.contains_key("lc"));
+
+    let mut late = Watcher::start(port, "s14/#").await;
+    let retained = late.barrier("s14/zz-barrier").await;
+    assert!(
+        retained.iter().all(|m| m.topic != topic("s14", "touch")),
+        "touch retained"
+    );
+    late.stop().await;
+    bridge.shutdown().await;
+}

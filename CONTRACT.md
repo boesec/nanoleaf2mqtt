@@ -50,14 +50,15 @@ maintenance topics are enabled (there are none), `contract_version` the version 
 | `effects` | array of strings, the device's effect list | `["Beatdrop", …]` |
 | `device` | object: `model`, `firmware`, `name`, `panels` | `{"model":"NL42","firmware":"12.0.3","name":"…","panels":15}` |
 | `layout` | object: `orientation` (°), `side_length`, `panels`: array of `{id, x, y, rotation, shape, shape_type}`; not published at all when the device reports no position data | `{"orientation":120,"side_length":134,"panels":[{"id":1001,"x":201,"y":77,"rotation":0,"shape":"triangle_shapes","shape_type":8}]}` |
-| `touch` | **not retained**, object `{"panel": <id>, "gesture": "<g>"}`; no `lc` | `{"panel":1234,"gesture":"swipe_up"}` |
+| `touch` | **not retained**, object `{"panel": <id>, "gesture": "<g>"}`; no `lc` | `{"panel":1234,"gesture":"tap"}` |
 
 `online` is published after the values next to it: `true` means they are current.
 
 Gestures: `tap`, `double_tap`, `swipe_up`, `swipe_down`, `swipe_left`, `swipe_right`,
-`unknown_<n>` for anything else.
+`long_press`, `unknown_<n>` for anything else. `long_press` is gesture id 6, undocumented by
+Nanoleaf, observed when a panel is held.
 
-A complete `touch` message: `{"val":{"panel":1234,"gesture":"swipe_up"},"ts":1760529600000}`.
+A complete `touch` message: `{"val":{"panel":1234,"gesture":"tap"},"ts":1760529600000}`.
 `layout` details: `orientation` is the global orientation in degrees, `side_length` the side length
 of one panel, per panel `id` is the panel id (the same as `panel` in `touch`; the controller unit
 is part of the list, as the device reports it), `x`/`y` the position, `rotation` the panel's
@@ -167,6 +168,12 @@ JSON message per device:
 - Home Assistant discovery: one device-based message per device instead of three per-entity
   messages; availability from `connected = 2` and `online`; on by default. Unique ids are
   unchanged; version 1 messages are migrated and cleared.
+
+## Changes within version 2
+
+- Touch gesture id 6 is now named `long_press` (undocumented by Nanoleaf, observed when a panel
+  is held); it was published as `unknown_6` before. Home Assistant discovery announces it among
+  the touch entity's event types. Topic and payload shape are unchanged, so the version stays 2.
 
 ## Deviations from mqtt-smarthome 2.0
 
