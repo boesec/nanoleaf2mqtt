@@ -8,6 +8,20 @@ own version, specified in [CONTRACT.md](CONTRACT.md).
 
 ## [Unreleased]
 
+### Added
+
+- Touch events carry `lc` (equal to `ts`), as mqtt-smarthome 2.0 asks of every object-form status.
+- The Home Assistant discovery `origin` names the project's `support_url`.
+- Boolean commands also accept `yes` and `no`.
+- The `device reachable` log line says how long the device was away after an outage.
+
+### Changed
+
+- `set/<id>/effect` matches the effect name ignoring ASCII case and sends the device's own
+  spelling.
+- The contract lists the remaining deviations from mqtt-smarthome 2.0 (no plain-value form,
+  configuration through the UI, no `--discover`, logging); `connected = 1` is no longer one.
+
 ## [0.1.0] - 2026-10-27
 
 The first release.

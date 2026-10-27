@@ -294,9 +294,20 @@ fn the_deviations_from_mqtt_smarthome_are_documented() {
         .split("\n## ")
         .find(|s| s.starts_with("Deviations from mqtt-smarthome 2.0"))
         .expect("a section on the deviations");
-    for topic in ["`-`", "`connected = 1`"] {
+    for topic in [
+        "`-`",
+        "No plain-value form",
+        "SQLite store",
+        "`--discover`",
+        "journald",
+    ] {
         assert!(section.contains(topic), "{topic} not in the deviations");
     }
+    // Both are conformant now and must not be listed as deviations.
+    for topic in ["`connected = 1`", "support_url"] {
+        assert!(!section.contains(topic), "{topic} is no deviation");
+    }
+    assert!(doc.contains("section 3.1 asks of multi-device adapters"));
 }
 
 #[test]

@@ -27,7 +27,7 @@ changing a payload is a breaking change and raises the contract version (publish
 
 | Topic | Retained | Payload |
 |---|---|---|
-| `<prefix>/connected` | yes, last will `0` | plain text `0` service down (last will, shutdown), `2` connected to the broker and running, whether or not the devices are reachable; `1` is not used |
+| `<prefix>/connected` | yes, last will `0` | plain text `0` service down (last will, shutdown), `2` connected to the broker and running, whether or not the devices are reachable; `1` is not used (a bridge for several devices reports each one in `status/<id>/online`, as section 3.1 asks of multi-device adapters) |
 | `<prefix>/info` | yes | `{"name":"nanoleaf2mqtt","version":"0.1.0","spec":"2.0","host":"nanoleaf2mqtt","pid":1234,"started":"2026-10-16T12:00:00.000Z","maintenance":false,"contract_version":2}` |
 
 `info`: `spec` is the mqtt-smarthome version implemented, `host` the host name (left out when it
@@ -50,7 +50,7 @@ maintenance topics are enabled (there are none), `contract_version` the version 
 | `effects` | array of strings, the device's effect list | `["Beatdrop", …]` |
 | `device` | object: `model`, `firmware`, `name`, `panels` | `{"model":"NL42","firmware":"12.0.3","name":"…","panels":15}` |
 | `layout` | object: `orientation` (°), `side_length`, `panels`: array of `{id, x, y, rotation, shape, shape_type}`; not published at all when the device reports no position data | `{"orientation":120,"side_length":134,"panels":[{"id":1001,"x":201,"y":77,"rotation":0,"shape":"triangle_shapes","shape_type":8}]}` |
-| `touch` | **not retained**, object `{"panel": <id>, "gesture": "<g>"}`; no `lc` | `{"panel":1234,"gesture":"tap"}` |
+| `touch` | **not retained**, object `{"panel": <id>, "gesture": "<g>"}`; `lc` equals `ts` (every touch is a change) | `{"panel":1234,"gesture":"tap"}` |
 
 `online` is published after the values next to it: `true` means they are current.
 
@@ -58,7 +58,7 @@ Gestures: `tap`, `double_tap`, `swipe_up`, `swipe_down`, `swipe_left`, `swipe_ri
 `long_press`, `unknown_<n>` for anything else. `long_press` is gesture id 6, undocumented by
 Nanoleaf, observed when a panel is held.
 
-A complete `touch` message: `{"val":{"panel":1234,"gesture":"tap"},"ts":1760529600000}`.
+A complete `touch` message: `{"val":{"panel":1234,"gesture":"tap"},"ts":1760529600000,"lc":1760529600000}`.
 `layout` details: `orientation` is the global orientation in degrees, `side_length` the side length
 of one panel, per panel `id` is the panel id (the same as `panel` in `touch`; the controller unit
 is part of the list, as the device reports it), `x`/`y` the position, `rotation` the panel's
@@ -84,13 +84,13 @@ is sent to the device.
 
 | Path | Payload | Effect |
 |---|---|---|
-| `on` | `true`/`false`, `1`/`0`, `on`/`off` | switch |
+| `on` | `true`/`false`, `1`/`0`, `on`/`off`, `yes`/`no` (case-insensitive) | switch |
 | `brightness` | 0–100, optionally `{"val":50,"transition":2}` (seconds, 0 or more) | set brightness (does not switch on by itself – the device decides) |
 | `hue` | 0–360 | colour, switches the device to `hs` mode |
 | `sat` | 0–100 | saturation |
 | `hs` | `"h,s"` or `[h,s]`, e.g. `120,80` or `{"val":[120,80]}` | hue, then saturation (two device requests); each is clamped on its own, and nothing is sent if either cannot be read |
 | `ct` | Kelvin within the reported range | colour temperature |
-| `effect` | effect name from `effects` | select effect |
+| `effect` | effect name from `effects`, matched ignoring ASCII case; the device's own spelling is sent | select effect |
 | `identify` | anything | panels flash |
 
 Ranges: brightness and saturation 0–100, hue 0–360, `ct` the range the device reports, and the
@@ -174,15 +174,18 @@ JSON message per device:
 - Touch gesture id 6 is now named `long_press` (undocumented by Nanoleaf, observed when a panel
   is held); it was published as `unknown_6` before. Home Assistant discovery announces it among
   the touch entity's event types. Topic and payload shape are unchanged, so the version stays 2.
+- `touch` now carries `lc`, equal to `ts` (section 5.2 asks for both in every object-form
+  status). Additive, so the version stays 2.
+- `set/<id>/effect` matches the effect name ignoring ASCII case (an exact match first) and sends
+  the device's own spelling (section 5.3).
+- Booleans (`on`) also accept `yes` and `no` (section 5.3).
+- The discovery `origin` carries `support_url`.
 
 ## Deviations from mqtt-smarthome 2.0
 
 - **Device ids may contain `-`** (section 3: item names SHOULD be `snake_case`). The ids are
   chosen by the owner and stable; changing them would rename every topic and Home Assistant
   entity.
-- **`connected = 1` is not used** (section 3.1): this is a bridge for several devices, so it
-  publishes `2` whenever it runs and reports each device in `status/<id>/online`, as section 3.1
-  describes for multi-device adapters.
 - **The discovery topic is `<ha>/device/nanoleaf2mqtt_<id>/config`** without the instance name
   (section 8 suggests `<adapter>_<name>_<device>`, linked to a bridge device with `via_device`):
   it is the node version 1 used, which lets Home Assistant migrate the existing entities in
@@ -190,4 +193,12 @@ JSON message per device:
   There is no bridge device and no `via_device`.
 - **No runtime version in `info`** (section 6 `node`, the runtime version, SHOULD): a compiled
   binary has no runtime of its own to report.
-- **No `support_url` in `origin`** (section 8 SHOULD): there is no public URL yet.
+- **No plain-value form** (section 5.2, `--json-payloads`): the object form `{val, ts, lc}` is
+  the default there and the plain form an opt-out nobody here uses; it is not offered.
+- **Configuration through the web UI and the SQLite store** instead of CLI options and
+  environment variables (section 9): the owner's design choice. Only the bootstrap settings come
+  from the environment, as `NANOLEAF2MQTT_*`. There is no `--name`; the topic prefix is set in
+  the UI.
+- **No `--discover` / `auto`** (section 10): devices are added by address in the UI.
+- **Logging** (section 11): no journald priority prefix and no runtime log level (there are no
+  maintenance topics); `NANOLEAF2MQTT_LOG` sets the level at start.
