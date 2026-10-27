@@ -266,6 +266,31 @@ async fn an_effect_added_since_the_last_read_is_accepted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn effect_names_match_ignoring_case_and_send_the_device_spelling() {
+    let port = support::start_broker();
+    let mut root = support::root(true, 30, "Prism");
+    root["effects"]["effectsList"] = json!(["Blaze", "blaze", "Northern Lights"]);
+    let (device, bridge) = running_with(port, "c7", root).await;
+
+    for (payload, sent) in [
+        ("northern lights", "Northern Lights"),
+        (r#"{"val":"NORTHERN LIGHTS"}"#, "Northern Lights"),
+        // An exact match wins over a case variant.
+        ("blaze", "blaze"),
+        ("Blaze", "Blaze"),
+        ("BLAZE", "Blaze"),
+    ] {
+        set(port, "c7", "effect", payload).await;
+        assert_eq!(
+            device.next_command().await,
+            put("effects", json!({"select":sent})),
+            "{payload}"
+        );
+    }
+    bridge.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hs_becomes_hue_then_saturation_and_is_clamped_per_component() {
     let port = support::start_broker();
     // The device accepts saturation up to 50 only.

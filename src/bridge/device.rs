@@ -181,10 +181,13 @@ pub(crate) async fn execute(
             }
         };
         let mut commands = parsed.commands;
-        if let [Command::Effect(name)] = commands.as_slice() {
-            if !effect_known(&client, &effects, name).await {
-                tracing::warn!(topic, payload = %payload, "unknown effect ignored");
-                continue;
+        if let [Command::Effect(name)] = commands.as_mut_slice() {
+            match resolve_effect(&client, &effects, name).await {
+                Some(device_name) => *name = device_name,
+                None => {
+                    tracing::warn!(topic, payload = %payload, "unknown effect ignored");
+                    continue;
+                }
             }
         }
         let mut clamped = parsed.clamped;
@@ -274,24 +277,71 @@ async fn current_ranges(
     }
 }
 
-/// Whether the device offers the effect. The list may be older than an effect added in the
-/// Nanoleaf app since, so a miss is checked against a fresh list; an unknown list lets the
-/// device decide.
-async fn effect_known(
+/// The device's own spelling of the effect, or `None` if it does not offer it. Names match
+/// ignoring ASCII case (mqtt-smarthome 2.0, section 5.3), an exact match first. The list may be
+/// older than an effect added in the Nanoleaf app since, so a miss is checked against a fresh
+/// list; an unknown list lets the device decide, with the name as given.
+async fn resolve_effect(
     client: &Client,
     effects: &watch::Receiver<Option<Vec<String>>>,
     name: &str,
-) -> bool {
+) -> Option<String> {
     let known = effects
         .borrow()
         .as_ref()
-        .map(|list| list.iter().any(|e| e == name));
+        .map(|list| match_effect(list, name));
     match known {
-        None | Some(true) => true,
-        Some(false) => match client.effects_list().await {
-            Ok(list) => list.iter().any(|e| e == name),
+        None => Some(name.to_owned()),
+        Some(Some(found)) => Some(found),
+        Some(None) => match client.effects_list().await {
+            Ok(list) => match_effect(&list, name),
             // The device will answer the command itself.
-            Err(_) => true,
+            Err(_) => Some(name.to_owned()),
         },
+    }
+}
+
+/// Finds `name` in `list`: the exact spelling if present, otherwise the first entry that
+/// differs only in ASCII case (several such entries are logged at `debug`).
+fn match_effect(list: &[String], name: &str) -> Option<String> {
+    if list.iter().any(|e| e == name) {
+        return Some(name.to_owned());
+    }
+    let mut matches = list.iter().filter(|e| e.eq_ignore_ascii_case(name));
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        tracing::debug!(
+            effect = name,
+            chosen = first.as_str(),
+            "several effects differ only in case, the first one is used"
+        );
+    }
+    Some(first.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::match_effect;
+
+    fn list(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    #[test]
+    fn effect_names_match_ignoring_case_and_return_the_device_spelling() {
+        let effects = list(&["Blaze", "Northern Lights"]);
+        assert_eq!(
+            match_effect(&effects, "northern lights").as_deref(),
+            Some("Northern Lights")
+        );
+        assert_eq!(match_effect(&effects, "BLAZE").as_deref(), Some("Blaze"));
+        assert_eq!(match_effect(&effects, "Nothing"), None);
+    }
+
+    #[test]
+    fn an_exact_match_wins_over_a_case_variant() {
+        let effects = list(&["blaze", "Blaze", "BLAZE"]);
+        assert_eq!(match_effect(&effects, "Blaze").as_deref(), Some("Blaze"));
+        assert_eq!(match_effect(&effects, "bLaze").as_deref(), Some("blaze"));
     }
 }
