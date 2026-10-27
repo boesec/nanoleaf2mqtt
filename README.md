@@ -7,7 +7,28 @@ publishes state and touch gestures following the
 [mqtt-smarthome](https://github.com/mqtt-smarthome/mqtt-smarthome) conventions and executes
 commands received over MQTT.
 
-Status: in development.
+Status: first release (v0.1.0). Tested with Nanoleaf Shapes (model NL42, firmware 12.4.1). Other
+devices with the local OpenAPI (Light Panels, Canvas, Lines, Elements) are expected to work but are
+untested.
+
+## Features
+
+- State and commands per device: on/off, brightness, colour (hue/saturation or colour temperature)
+  and effect selection; what the device reports is what is published.
+- The device's effect list and its panel layout.
+- Touch gestures (tap, double tap, swipes, long press) as MQTT events.
+- Home Assistant MQTT discovery, in addition to the plain topics and switchable.
+- A small configuration web UI with one admin password; broker, devices and pairing are set there
+  and apply without a restart.
+- Runs unattended: reconnects to the devices and the broker forever, and reports each device's
+  reachability on MQTT.
+
+## Limitations
+
+- Wi-Fi OpenAPI only; devices controlled through Thread or Matter are not supported.
+- No TLS to the MQTT broker yet.
+- One admin password, no user accounts.
+- Touch detection depends on the device: some touches are not reported, as observed on the Shapes.
 
 ## Configuration
 
@@ -124,9 +145,11 @@ Run the command as the service user, with the same data directory as the service
 the service afterwards so that existing sessions end:
 
 ```sh
-sudo -u nanoleaf2mqtt env NANOLEAF2MQTT_DATA_DIR=/var/lib/nanoleaf2mqtt nanoleaf2mqtt reset-password
+runuser -u nanoleaf2mqtt -- env NANOLEAF2MQTT_DATA_DIR=/var/lib/nanoleaf2mqtt /usr/local/bin/nanoleaf2mqtt reset-password
 systemctl restart nanoleaf2mqtt
 ```
+
+Where `sudo` is installed, `sudo -u nanoleaf2mqtt …` with the same arguments works the same.
 
 The command never sets, asks for or prints a password. It can run while the service runs.
 
