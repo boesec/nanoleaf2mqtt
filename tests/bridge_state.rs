@@ -246,7 +246,7 @@ async fn touch_is_published_but_not_retained() {
     for touch in &touches {
         let object = touch.as_object().unwrap();
         assert!(
-            object.contains_key("ts") && !object.contains_key("lc"),
+            object.contains_key("ts") && object["lc"] == object["ts"],
             "{touch}"
         );
     }
@@ -300,7 +300,7 @@ async fn a_held_panel_is_published_as_long_press_and_not_retained() {
         json!({"panel":19508,"gesture":"unknown_7"})
     );
     let first = touches[0].as_object().unwrap();
-    assert!(first.contains_key("ts") && !first.contains_key("lc"));
+    assert!(first.contains_key("ts") && first["lc"] == first["ts"]);
 
     let mut late = Watcher::start(port, "s14/#").await;
     let retained = late.barrier("s14/zz-barrier").await;

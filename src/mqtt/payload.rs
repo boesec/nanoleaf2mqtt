@@ -34,13 +34,15 @@ pub struct StatePayload {
     pub lc: i64,
 }
 
-/// The payload of `touch`: no `lc`, a touch is an event, not a state.
+/// The payload of `touch`: an event, so every one is a change and `lc` equals `ts`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventPayload {
     /// The event.
     pub val: Value,
     /// When it was received, ms since the epoch.
     pub ts: i64,
+    /// When it last changed; the same as `ts`.
+    pub lc: i64,
 }
 
 /// The retained `info` payload (mqtt-smarthome 2.0, section 6).
@@ -286,7 +288,7 @@ fn parse_hs(val: &Value) -> Result<(Number, Number), PayloadError> {
 
 fn parse_bool(val: &Value) -> Result<bool, PayloadError> {
     const EXPECTED: PayloadError = PayloadError::Invalid {
-        expected: "true/false, 1/0 or on/off",
+        expected: "true/false, 1/0, on/off or yes/no",
     };
     match val {
         Value::Bool(b) => Ok(*b),
@@ -296,8 +298,8 @@ fn parse_bool(val: &Value) -> Result<bool, PayloadError> {
             _ => Err(EXPECTED),
         },
         Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
-            "on" | "true" | "1" => Ok(true),
-            "off" | "false" | "0" => Ok(false),
+            "on" | "true" | "yes" | "1" => Ok(true),
+            "off" | "false" | "no" | "0" => Ok(false),
             _ => Err(EXPECTED),
         },
         _ => Err(EXPECTED),
@@ -355,10 +357,11 @@ mod tests {
         let event = EventPayload {
             val: json!({"gesture": "tap"}),
             ts: 3,
+            lc: 3,
         };
         assert_eq!(
             serde_json::to_string(&event).unwrap(),
-            r#"{"val":{"gesture":"tap"},"ts":3}"#
+            r#"{"val":{"gesture":"tap"},"ts":3,"lc":3}"#
         );
     }
 
@@ -419,6 +422,11 @@ mod tests {
             (r#"{"val":true}"#, true),
             (r#"{"val":0}"#, false),
             (r#"{"val":"off"}"#, false),
+            ("yes", true),
+            ("YES", true),
+            (" no ", false),
+            (r#"{"val":"yes"}"#, true),
+            (r#"{"val":" No "}"#, false),
         ] {
             assert_eq!(
                 parse(CommandPath::On, payload),
@@ -426,7 +434,7 @@ mod tests {
                 "{payload}"
             );
         }
-        for bad in ["2", "yes", "null", "[]", r#"{"value":true}"#, "", "  "] {
+        for bad in ["2", "maybe", "null", "[]", r#"{"value":true}"#, "", "  "] {
             assert!(parse(CommandPath::On, bad).is_err(), "{bad}");
         }
         assert_eq!(

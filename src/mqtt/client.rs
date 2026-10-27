@@ -667,12 +667,14 @@ impl Mqtt {
         true
     }
 
-    /// Publishes a touch event on `status/<device>/touch`: not retained, `{val, ts}`. Dropped
+    /// Publishes a touch event on `status/<device>/touch`: not retained, `{val, ts, lc}` with `lc == ts`. Dropped
     /// while the broker is unreachable.
     pub fn publish_touch(&self, device: &DeviceId, panel: Option<u32>, gesture: Gesture) {
+        let ts = to_ms(Utc::now());
         let payload = EventPayload {
             val: touch_value(panel, gesture),
-            ts: to_ms(Utc::now()),
+            ts,
+            lc: ts,
         };
         let state = self.inner.state();
         let Some(connection) = state.session() else {
