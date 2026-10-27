@@ -31,7 +31,10 @@ use super::payload::SERVICE_NAME;
 use super::topic::{CommandPath, HaEntity, StatusPath, Topics, ha_discovery, ha_node};
 use crate::model::{DeviceId, DeviceSnapshot, Gesture, ValueRange};
 
-/// `connected` → availability: `2` (and above) counts as available, `0`, a cleared topic and
+/// Public home of the service, named in the discovery `origin`.
+const SUPPORT_URL: &str = "https://github.com/boesec/nanoleaf2mqtt";
+
+/// `connected` → availability:`2` (and above) counts as available, `0`, a cleared topic and
 /// anything else not.
 const CONNECTED_TEMPLATE: &str = "{{ 'online' if value | int(0) >= 2 else 'offline' }}";
 /// `online` → availability; a cleared topic counts as offline.
@@ -148,7 +151,11 @@ pub fn config(
         .collect();
     json!({
         "device": device_block(device, about),
-        "origin": {"name": SERVICE_NAME, "sw_version": env!("CARGO_PKG_VERSION")},
+        "origin": {
+            "name": SERVICE_NAME,
+            "sw_version": env!("CARGO_PKG_VERSION"),
+            "support_url": SUPPORT_URL,
+        },
         "availability": availability,
         "availability_mode": "all",
         "qos": 0,

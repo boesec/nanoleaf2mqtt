@@ -87,6 +87,7 @@
   },
   "origin": {
     "name": "nanoleaf2mqtt",
+    "support_url": "https://github.com/boesec/nanoleaf2mqtt",
     "sw_version": "<version>"
   },
   "qos": 0
