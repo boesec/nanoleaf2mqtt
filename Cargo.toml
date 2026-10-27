@@ -6,6 +6,10 @@ rust-version = "1.85"
 publish = false
 license = "MIT"
 description = "Bridge between Nanoleaf light panels and MQTT"
+repository = "https://github.com/boesec/nanoleaf2mqtt"
+readme = "README.md"
+keywords = ["nanoleaf", "mqtt", "smarthome", "home-automation", "bridge"]
+categories = ["network-programming", "command-line-utilities"]
 
 [lints.rust]
 unsafe_code = "deny"
