@@ -11,6 +11,6 @@ fn cli_version() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "nanoleaf2mqtt 0.1.0"
+        format!("nanoleaf2mqtt {}", env!("CARGO_PKG_VERSION"))
     );
 }

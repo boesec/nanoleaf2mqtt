@@ -8,6 +8,8 @@ own version, specified in [CONTRACT.md](CONTRACT.md).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-27
+
 ### Added
 
 - Touch events carry `lc` (equal to `ts`), as mqtt-smarthome 2.0 asks of every object-form status.
@@ -49,5 +51,6 @@ The first release.
 - A hardened systemd unit and an install script.
 - Static Linux binaries for x86_64, aarch64 and armv7, with SHA-256 checksums.
 
-[Unreleased]: https://github.com/boesec/nanoleaf2mqtt/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/boesec/nanoleaf2mqtt/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/boesec/nanoleaf2mqtt/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/boesec/nanoleaf2mqtt/releases/tag/v0.1.0

@@ -9,7 +9,7 @@ publishes state and touch gestures following the
 [mqtt-smarthome](https://github.com/mqtt-smarthome/mqtt-smarthome) conventions and executes
 commands received over MQTT.
 
-Status: first release (v0.1.0). Tested with Nanoleaf Shapes (model NL42, firmware 12.4.1). Other
+Status: v0.1.1. Tested with Nanoleaf Shapes (model NL42, firmware 12.4.1). Other
 devices with the local OpenAPI (Light Panels, Canvas, Lines, Elements) are expected to work but are
 untested.
 
@@ -108,7 +108,7 @@ binary, `LICENSE`, `README.md`, `CONTRACT.md` and `packaging/`. On the host, as 
 version and architecture filled in:
 
 ```sh
-version=0.1.0
+version=0.1.1
 target=x86_64-unknown-linux-musl
 base=https://github.com/boesec/nanoleaf2mqtt/releases/download/v$version
 wget "$base/nanoleaf2mqtt-$version-$target.tar.gz" "$base/SHA256SUMS"
