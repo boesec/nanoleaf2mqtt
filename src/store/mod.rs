@@ -171,6 +171,15 @@ impl Store {
         }
     }
 
+    /// Removes the stored admin password, so that the first-start page can set a new one.
+    /// Returns whether there was one. Sessions of a running service end at its restart.
+    pub async fn clear_admin_password(&self) -> Result<bool, StoreError> {
+        let done = sqlx::query("DELETE FROM admin WHERE id = 1")
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() == 1)
+    }
+
     // ----- last change ------------------------------------------------------------------
 
     /// Every persisted `lc`.

@@ -42,6 +42,11 @@ enum CliCommand {
         #[arg(long, default_value_t = nanoleaf::DEFAULT_PORT)]
         port: u16,
     },
+    /// Remove the stored admin password, so that the UI offers the set-password page again.
+    ///
+    /// Run it as the service user with the same NANOLEAF2MQTT_DATA_DIR as the service, then
+    /// restart the service to end existing sessions. It never sets, asks for or prints a password.
+    ResetPassword,
 }
 
 /// What the web UI reaches of the rest of the service.
@@ -70,6 +75,18 @@ async fn main() -> anyhow::Result<()> {
         let token = nanoleaf::pair(&host, port).await?;
         // The one place the token is printed, on purpose: the user has to copy it.
         println!("{}", token.expose());
+        return Ok(());
+    }
+    if let Some(CliCommand::ResetPassword) = cli.command {
+        let config = Config::from_env()?;
+        let store = Store::open(&config.data_dir).await?;
+        let removed = store.clear_admin_password().await;
+        store.close().await;
+        if removed? {
+            println!("admin password removed; open the UI to set a new one");
+        } else {
+            println!("no admin password is set; nothing to remove");
+        }
         return Ok(());
     }
     let config = Config::from_env()?;

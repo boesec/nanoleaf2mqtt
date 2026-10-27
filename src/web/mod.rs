@@ -14,7 +14,6 @@ mod pages;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::Router;
@@ -64,8 +63,6 @@ struct Shared {
     timing: AuthTiming,
     sessions: Mutex<Sessions>,
     throttle: Mutex<Throttle>,
-    /// Once set, the admin password never goes away again; until then the store is asked.
-    password_set: AtomicBool,
     /// Held from a store write until the matching change is sent, so the bridge receives the
     /// changes in the order the store saw them.
     config: tokio::sync::Mutex<()>,
@@ -87,7 +84,6 @@ impl AppState {
                 timing,
                 sessions: Mutex::new(Sessions::default()),
                 throttle: Mutex::new(Throttle::default()),
-                password_set: AtomicBool::new(false),
                 config: tokio::sync::Mutex::new(()),
             }),
         }
@@ -111,15 +107,10 @@ impl AppState {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Asked of the store every time: the password can be removed from outside (the
+    /// `reset-password` command), and the first-start page must then be offered again.
     async fn password_set(&self) -> Result<bool, StoreError> {
-        if self.inner.password_set.load(Ordering::SeqCst) {
-            return Ok(true);
-        }
-        let set = self.store().admin_password_hash().await?.is_some();
-        if set {
-            self.inner.password_set.store(true, Ordering::SeqCst);
-        }
-        Ok(set)
+        Ok(self.store().admin_password_hash().await?.is_some())
     }
 
     /// Hands a change to the bridge. A stopped bridge (service shutting down) is only logged.

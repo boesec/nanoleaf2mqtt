@@ -117,6 +117,19 @@ The first run creates the system user; the data directory is never touched.
 Logs: `journalctl -u nanoleaf2mqtt -f`. Bootstrap settings are changed with a drop-in
 (`systemctl edit nanoleaf2mqtt`); nothing secret belongs in the unit or a drop-in.
 
+### Forgotten admin password
+
+Remove the stored password, then set a new one in the UI (the first-start page appears again).
+Run the command as the service user, with the same data directory as the service, and restart
+the service afterwards so that existing sessions end:
+
+```sh
+sudo -u nanoleaf2mqtt env NANOLEAF2MQTT_DATA_DIR=/var/lib/nanoleaf2mqtt nanoleaf2mqtt reset-password
+systemctl restart nanoleaf2mqtt
+```
+
+The command never sets, asks for or prints a password. It can run while the service runs.
+
 ### Reaching the UI
 
 The unit binds the UI to `127.0.0.1:8080`, so it is not reachable from the network directly.
