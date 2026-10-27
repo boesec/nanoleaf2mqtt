@@ -1,5 +1,7 @@
 # nanoleaf2mqtt
 
+[![CI](https://github.com/boesec/nanoleaf2mqtt/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/boesec/nanoleaf2mqtt/actions)
+
 Bridge between Nanoleaf light panels and MQTT, written in Rust.
 
 It reads the panels' state through the local Nanoleaf OpenAPI, follows their event stream,
@@ -84,15 +86,64 @@ scripts/check.sh      # or scripts/check.ps1 on Windows: fmt, clippy, tests
 
 ## Deployment
 
-The service runs as a systemd unit on Linux (x86_64, glibc 2.36 or later, for example Debian 12
-or 13), under its own system user `nanoleaf2mqtt`. The unit is
-[packaging/systemd/nanoleaf2mqtt.service](packaging/systemd/nanoleaf2mqtt.service): it restarts
-the service whenever it stops and never gives up, and it is hardened (read-only system, no
-capabilities, private `/tmp`, system call filter).
+The service runs as a systemd unit on Linux, under its own system user `nanoleaf2mqtt`. The unit
+is [packaging/systemd/nanoleaf2mqtt.service](packaging/systemd/nanoleaf2mqtt.service): it
+restarts the service whenever it stops and never gives up, and it is hardened (read-only system,
+no capabilities, private `/tmp`, system call filter).
+
+### Install from a release
+
+Every [release](https://github.com/boesec/nanoleaf2mqtt/releases) has static binaries (linked
+against musl, no system libraries needed) for these architectures:
+
+| Architecture | Archive suffix | For example |
+|---|---|---|
+| x86_64 | `x86_64-unknown-linux-musl` | PCs, servers, virtual machines and containers |
+| aarch64 (64-bit ARM) | `aarch64-unknown-linux-musl` | Raspberry Pi 3, 4 and 5 with a 64-bit system |
+| armv7 (32-bit ARM, hard float) | `armv7-unknown-linux-musleabihf` | Raspberry Pi 2, 3, 4 and 5 with a 32-bit system |
+
+`uname -m` tells which one a host needs (`x86_64`, `aarch64`, `armv7l`); ARMv6 (Raspberry Pi 1
+and Zero) is not supported. Each archive holds the
+binary, `LICENSE`, `README.md`, `CONTRACT.md` and `packaging/`. On the host, as root, with the
+version and architecture filled in:
+
+```sh
+version=0.1.0
+target=x86_64-unknown-linux-musl
+base=https://github.com/boesec/nanoleaf2mqtt/releases/download/v$version
+wget "$base/nanoleaf2mqtt-$version-$target.tar.gz" "$base/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf "nanoleaf2mqtt-$version-$target.tar.gz"
+cd "nanoleaf2mqtt-$version-$target"
+packaging/install.sh ./nanoleaf2mqtt packaging/systemd/nanoleaf2mqtt.service
+```
+
+`sha256sum` must print `OK` for the archive; do not go on otherwise. `curl -fLO` works as well as
+`wget`. [packaging/install.sh](packaging/install.sh) creates the system user on the first run,
+installs binary and unit, restarts the service and waits until it has started; an update is the
+same steps with the new version. Then open the UI as described in
+[Reaching the UI](#reaching-the-ui).
+
+### Build release archives
+
+`scripts/release-build.ps1` builds the three static binaries on Windows with
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) and packs them into
+`target/dist/<version>/` with `SHA256SUMS`, exactly like the release workflow does. It needs Zig,
+cargo-zigbuild (see below), Git for Windows for its `bash` and `tar`, and the targets once:
+
+```powershell
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
+scripts/release-build.ps1
+```
+
+A tag `v<version>` that matches the version in `Cargo.toml` makes the release workflow build,
+check and publish the release, with the version's section of [CHANGELOG.md](CHANGELOG.md) as
+release notes.
 
 ### Build on Windows for Linux
 
-The Linux binary is cross-compiled with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild),
+For the deploy script below, a binary for x86_64 Linux with glibc 2.36 or later (for example
+Debian 12 or 13) is cross-compiled with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild),
 which uses [Zig](https://ziglang.org) as C compiler and linker. Once:
 
 ```powershell
