@@ -11,6 +11,7 @@ Docs/
 CLAUDE.md
 AGENTS.md
 .claude/
+youtrack.json
 
 # Local development data (SQLite store)
 /data/
